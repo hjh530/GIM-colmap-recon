@@ -57,9 +57,20 @@ This produces a `database.db` file ready for external reconstruction tools.
 
 #### 3. Reconstruction
 
-- **COLMAP**: Open `database.db` and proceed directly to triangulation.
-- **GLOMAP**: Follow [GLOMAP instructions](https://github.com/colmap/glomap) for global SfM.
 
+You can adjust the pair selection strategy in `reconstruction.py` according to your data characteristics:
+- **Exhaustive matching** – suitable for small image sets.
+- **Sequential matching** – ideal for ordered sequences (e.g., video frames).
+- **NetVLAD retrieval** – recommended for large, unordered collections.
+
+After generating the database, you have two options for sparse reconstruction:
+
+- **GLOMAP (global SfM)** – Integrated in recent COLMAP releases. It is significantly faster than incremental SfM while achieving comparable accuracy. Example command:
+```bash
+colmap global_mapper --database_path H:\JG2\database2.db --image_path H:\JG2\images --output_path H:\JG2\sparse5
+```
+- **Incremental SfM (COLMAP GUI)** – More beginner-friendly. Simply open `database.db` in the COLMAP GUI and follow the standard reconstruction steps (feature matching is already completed).
+Robust feature extraction and matching are often the key to successful reconstruction—especially when default COLMAP methods fail. Unless the input data is extremely poor, this pipeline will likely produce a usable model.
 ---
 
 ### Acknowledgements
@@ -124,8 +135,20 @@ python reconstruction1.py --scene_name ${scene_name} --version ${version} --stop
 
 #### 3. 完成重建
 
-- **COLMAP**：打开生成的 `database.db`，由于特征与匹配已完成，可直接跳转至三角测量步骤。
-- **GLOMAP**：按照 [GLOMAP 官方指南](https://github.com/colmap/glomap) 使用相同数据库进行全局式运动恢复结构。
+您可以根据数据特点在 `reconstruction.py` 中调整匹配对选择策略：
+- **穷举匹配** – 适合小规模图像集。
+- **顺序匹配** – 适合有序序列（如视频帧）。
+- **NetVLAD 检索** – 推荐用于大规模无序图像集。
+
+生成数据库后，有两种稀疏重建方式可选：
+
+- **GLOMAP 全局式重建** – 已集成在最新版 COLMAP 中。相比增量式重建速度更快，精度相当。示例命令：
+```bash
+colmap global_mapper --database_path H:\JG2\database2.db --image_path H:\JG2\images --output_path H:\JG2\sparse5
+```
+- **增量式重建（COLMAP GUI）** – 更适合新手。在 COLMAP 图形界面中打开 `database.db`，按常规步骤操作即可（特征匹配已完成，可直接跳至三角测量）。
+
+更稳健的特征点提取与匹配往往能生成更准确的相机位姿。当您使用 COLMAP 默认算法无法重建时，不妨尝试本工具——除非数据质量极差，否则大概率能够成功。
 
 ---
 
