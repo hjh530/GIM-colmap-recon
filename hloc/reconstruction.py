@@ -110,6 +110,7 @@ def main(sfm_dir: Path,
          image_list: Optional[List[str]] = None,
          image_options: Optional[Dict[str, Any]] = None,
          mapper_options: Optional[Dict[str, Any]] = None,
+         stop_after_db: bool = False,
          ) -> pycolmap.Reconstruction:
 
     assert features.exists(), features
@@ -128,6 +129,9 @@ def main(sfm_dir: Path,
     if not skip_geometric_verification:
         estimation_and_geometric_verification(database, pairs, verbose)
     unique_camera_ids(database)
+    if stop_after_db:
+        logger.info('Stopping after database generation as requested.')
+        return None
     reconstruction = run_reconstruction(
         sfm_dir, database, image_dir, verbose, mapper_options)
     if reconstruction is not None:
@@ -156,7 +160,9 @@ if __name__ == '__main__':
                             pycolmap.ImageReaderOptions().todict()))
     parser.add_argument('--mapper_options', nargs='+', default=[],
                         help='List of key=value from {}'.format(
-                            pycolmap.IncrementalMapperOptions().todict()))
+                            pycolmap.IncrementalMapperOptions().todict())
+    parser.add_argument('--stop_after_db', action='store_true',
+                        help='Stop after building the database (skip reconstruction)'))
     args = parser.parse_args().__dict__
 
     image_options = parse_option_args(
