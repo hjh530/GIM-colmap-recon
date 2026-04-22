@@ -151,7 +151,7 @@ def segmentation(images, segment_root, matcher_conf):
 # 主流程
 # =========================================================
 
-def main(scene_name, version):
+def main(scene_name, version, stop_after_db):
     # 路径设置
     images = Path('inputs') / scene_name / 'images'
     outputs = Path('outputs') / scene_name / version
@@ -256,13 +256,15 @@ def main(scene_name, version):
     # Step 5: 稀疏重建
     print("Step 4: Running Sparse Reconstruction...")
     opts = dict(camera_model='PINHOLE')
-    reconstruction.main(sfm_dir, images, image_pairs, feature_path, match_path, image_options=opts)
+    reconstruction.main(sfm_dir, images, image_pairs, feature_path, match_path, image_options=opts, stop_after_db=stop_after_db)
 
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--scene_name', type=str, required=True)
     parser.add_argument('--version', type=str, choices={'gim_dkm', 'gim_lightglue'},
                         default='gim_dkm')
+    parser.add_argument('--stop_after_db', action='store_true',
+                        help='Stop after generating COLMAP database, skip reconstruction.')
     args = parser.parse_args()
     
-    main(args.scene_name, args.version)
+    main(args.scene_name, args.version, stop_after_db=args.stop_after_db)
