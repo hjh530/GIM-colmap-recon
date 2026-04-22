@@ -3,7 +3,7 @@ import logging
 import numpy as np
 from collections import defaultdict
 import pycolmap
-
+import shlex
 logger = logging.getLogger(__name__)
 
 
@@ -46,6 +46,8 @@ def parse_retrieval(path):
             q, r = p.split()
             retrieval[q].append(r)
     return dict(retrieval)
+
+
 
 
 def names_to_pair(name0, name1, separator='/'):

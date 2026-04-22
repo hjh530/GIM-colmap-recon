@@ -5,6 +5,8 @@ dump/
 logs/
 weights/
 tensorboard/
+outputs/
+inputs/
 
 # Python
 **/__pycache__/

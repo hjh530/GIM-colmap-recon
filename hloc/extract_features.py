@@ -31,11 +31,11 @@ confs = {
         'model': {
             'name': 'superpoint',
             'nms_radius': 3,
-            'max_keypoints': 2048,
+            'max_keypoints': 8192,
         },
         'preprocessing': {
             'grayscale': True,
-            'resize_max': 1920,
+            'resize_max': None,
         },
     },
     'superpoint_aachen': {

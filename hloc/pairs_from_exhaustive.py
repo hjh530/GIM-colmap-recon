@@ -19,7 +19,7 @@ def main(
     if image_list is not None:
         if isinstance(image_list, (str, Path)):
             if image_list.is_dir():
-                names_q = [x for x in os.listdir(str(image_list)) if x.endswith('.jpg') or x.endswith('.png')]
+                names_q = [x for x in os.listdir(str(image_list)) if x.endswith('.jpg') or x.endswith('.png') or x.endswith('.JPG')]
                 names_q.sort()
             else:
                 names_q = parse_image_lists(image_list)
@@ -52,8 +52,8 @@ def main(
         for j, n2 in enumerate(names_ref):
             if self_matching and j <= i:
                 continue
-            # if j - i > 5:
-            #     continue
+            #if j - i > 5:
+                #continue
             pairs.append((n1, n2))
 
     logger.info(f'Found {len(pairs)} pairs.')
