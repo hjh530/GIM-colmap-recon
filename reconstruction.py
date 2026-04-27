@@ -4,6 +4,7 @@ import torch
 import warnings
 import numpy as np
 import h5py
+import cv2
 from tqdm import tqdm
 from os.path import join
 from pathlib import Path
@@ -119,81 +120,6 @@ def generate_sequential_pairs_with_netvlad(
         f.write("\n".join(" ".join(p) for p in final_pairs))
 
 
-def filter_keypoints_by_mask(feature_path, mask_dir, images_dir):
-    """
-    根据 mask_dir 中的二值 mask 删除落在白色区域内的特征点。
-    feature_path : str, h5 特征文件路径
-    mask_dir     : str, 存放 mask 的目录
-    images_dir   : Path, 原始图像目录（用于获取图像尺寸）
-    """
-    mask_dir = Path(mask_dir)
-    if not mask_dir.exists():
-        print(f"[Filter] Mask directory {mask_dir} does not exist, skipping.")
-        return
-
-    print(f"[Filter] Filtering keypoints using masks from: {mask_dir}")
-    with h5py.File(feature_path, 'r+') as fd:
-        image_names = list(fd.keys())
-        for name in tqdm(image_names, desc="Filtering keypoints"):
-            grp = fd[name]
-            if 'keypoints' not in grp:
-                continue
-
-            kpts = grp['keypoints'][:]
-            descs = grp['descriptors'][:]
-
-            # 寻找对应的 mask 文件（支持 xxx_mask.png 或 xxx.png）
-            stem = Path(name).stem
-            mask_files = list(mask_dir.glob(f"{stem}_mask.*")) + \
-                         list(mask_dir.glob(f"{stem}.*"))
-            if not mask_files:
-                print(f"  [Warning] No mask for {name}, skipping")
-                continue
-            mask_path = mask_files[0]
-
-            # 加载并二值化 mask：>0 视为忽略
-            if mask_path.suffix == '.npy':
-                mask = np.load(mask_path)
-            else:
-                mask = np.array(Image.open(mask_path).convert('L'))
-            mask_bool = mask > 0
-
-            # 获取图像尺寸（优先 h5 属性，否则读图）
-            if 'image_size' in grp.attrs:
-                img_w, img_h = grp.attrs['image_size']
-            else:
-                img = Image.open(Path(images_dir) / name)
-                img_w, img_h = img.size
-
-            # 计算缩放比例
-            mask_h, mask_w = mask_bool.shape
-            scale_x = mask_w / img_w if img_w != mask_w else 1.0
-            scale_y = mask_h / img_h if img_h != mask_h else 1.0
-
-            # 逐点判断
-            keep = np.ones(len(kpts), dtype=bool)
-            for i, (x, y) in enumerate(kpts):
-                mx = int(round(x * scale_x))
-                my = int(round(y * scale_y))
-                if 0 <= mx < mask_w and 0 <= my < mask_h:
-                    if mask_bool[my, mx]:
-                        keep[i] = False
-
-            n_removed = (~keep).sum()
-            print(f"  {name}: removed {n_removed}/{len(kpts)} keypoints")
-
-            # 更新 h5 数据
-            del grp['keypoints'], grp['descriptors']
-            grp.create_dataset('keypoints', data=kpts[keep])
-            grp.create_dataset('descriptors', data=descs[keep])
-            if 'scores' in grp:
-                scores = grp['scores'][:]
-                del grp['scores']
-                grp.create_dataset('scores', data=scores[keep])
-
-    print("[Filter] Done.")
-
-
 def segmentation(images, segment_root, matcher_conf):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -273,73 +199,112 @@ def main(scene_name, version, stop_after_db, mask_dir):
     # ===== segmentation（原流程，可保留） =====
     segmentation(images, segment_root, matcher_conf)
 
-    # ===== 特征匹配 =====
+    # ===== 特征匹配（动态 mask 注入） =====
     print("Step 3: Feature matching...")
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning)
+    import hloc.utils.io as hloc_io
+    original_read_image = hloc_io.read_image
 
-        if version == 'gim_dkm':
-            feature_path, match_path = match_dense.main(
-                matcher_conf, image_pairs, images, outputs)
-
-        elif version == 'gim_lightglue':
-            checkpoints_path = join('weights', 'gim_lightglue_100h.ckpt')
-
-            detector = SuperPoint({
-                'max_num_keypoints': 12000,
-                'force_num_keypoints': True,
-                'detection_threshold': 0.0,
-                'nms_radius': 3,
-                'trainable': False,
-            })
-
-            state_dict = torch.load(checkpoints_path, map_location='cpu')
-            if 'state_dict' in state_dict:
-                state_dict = state_dict['state_dict']
-
-            for k in list(state_dict.keys()):
-                if k.startswith('model.'):
-                    state_dict.pop(k)
-                if k.startswith('superpoint.'):
-                    state_dict[k.replace('superpoint.', '', 1)] = state_dict.pop(k)
-
-            detector.load_state_dict(state_dict)
-
-            model = LightGlue({
-                'filter_threshold': 0.2,
-                'flash': False,
-                'checkpointed': True,
-            })
-
-            state_dict = torch.load(checkpoints_path, map_location='cpu')
-            if 'state_dict' in state_dict:
-                state_dict = state_dict['state_dict']
-
-            for k in list(state_dict.keys()):
-                if k.startswith('superpoint.'):
-                    state_dict.pop(k)
-                if k.startswith('model.'):
-                    state_dict[k.replace('model.', '', 1)] = state_dict.pop(k)
-
-            model.load_state_dict(state_dict)
-
-            feature_path = extract_features.main(feature_conf, images, outputs, model=detector)
-            match_path = match_features.main(
-                matcher_conf, image_pairs,
-                feature_conf['output'], outputs,
-                model=model
-            )
-
-    # ===== 特征过滤（新增） =====
-    # 自动检测默认 mask_dir
+    # 决定 mask 目录
+    mask_dir_path = None
     if mask_dir is None:
         default_mask_dir = Path('inputs') / scene_name / 'masks'
         if default_mask_dir.exists():
-            mask_dir = str(default_mask_dir)
+            mask_dir_path = default_mask_dir
+    elif Path(mask_dir).exists():
+        mask_dir_path = Path(mask_dir)
 
-    if mask_dir:
-        filter_keypoints_by_mask(feature_path, mask_dir, images)
+    # 如果存在 mask 目录，替换 read_image
+    if mask_dir_path is not None:
+        print(f"[Dynamic Mask] Applying masks from {mask_dir_path} during feature extraction")
+
+        def masked_read_image(path, grayscale=False):
+            # 读取原始图像 (numpy array)
+            img = original_read_image(path, grayscale=grayscale)
+
+            # 查找对应的 mask 文件
+            img_path = Path(path)
+            stem = img_path.stem
+            mask_files = list(mask_dir_path.glob(f"{stem}_mask.*")) + list(
+                mask_dir_path.glob(f"{stem}.*"))
+            if mask_files:
+                mask_file = mask_files[0]
+                mask = np.array(Image.open(mask_file).convert('L'))  # 0-255
+
+                # 确保 mask 尺寸与图像匹配
+                if mask.shape[:2] != img.shape[:2]:
+                    mask = cv2.resize(mask, (img.shape[1], img.shape[0]),
+                                      interpolation=cv2.INTER_NEAREST)
+
+                # 白色区域 (>128) 视为要忽略的区域，涂白
+                white_mask = mask > 128
+                if grayscale:
+                    img[white_mask] = 255
+                else:
+                    img[white_mask] = (255, 255, 255)  # RGB 白色
+            return img
+
+        hloc_io.read_image = masked_read_image
+
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=UserWarning)
+
+            if version == 'gim_dkm':
+                feature_path, match_path = match_dense.main(
+                    matcher_conf, image_pairs, images, outputs)
+
+            elif version == 'gim_lightglue':
+                checkpoints_path = join('weights', 'gim_lightglue_100h.ckpt')
+
+                detector = SuperPoint({
+                    'max_num_keypoints': 12000,
+                    'force_num_keypoints': True,
+                    'detection_threshold': 0.0,
+                    'nms_radius': 3,
+                    'trainable': False,
+                })
+
+                state_dict = torch.load(checkpoints_path, map_location='cpu')
+                if 'state_dict' in state_dict:
+                    state_dict = state_dict['state_dict']
+
+                for k in list(state_dict.keys()):
+                    if k.startswith('model.'):
+                        state_dict.pop(k)
+                    if k.startswith('superpoint.'):
+                        state_dict[k.replace('superpoint.', '', 1)] = state_dict.pop(k)
+
+                detector.load_state_dict(state_dict)
+
+                model = LightGlue({
+                    'filter_threshold': 0.2,
+                    'flash': False,
+                    'checkpointed': True,
+                })
+
+                state_dict = torch.load(checkpoints_path, map_location='cpu')
+                if 'state_dict' in state_dict:
+                    state_dict = state_dict['state_dict']
+
+                for k in list(state_dict.keys()):
+                    if k.startswith('superpoint.'):
+                        state_dict.pop(k)
+                    if k.startswith('model.'):
+                        state_dict[k.replace('model.', '', 1)] = state_dict.pop(k)
+
+                model.load_state_dict(state_dict)
+
+                feature_path = extract_features.main(feature_conf, images, outputs, model=detector)
+                match_path = match_features.main(
+                    matcher_conf, image_pairs,
+                    feature_conf['output'], outputs,
+                    model=model
+                )
+    finally:
+        # 恢复原始 read_image
+        if mask_dir_path is not None:
+            hloc_io.read_image = original_read_image
 
     # ===== 重建 =====
     print("Step 4: Reconstruction...")
@@ -364,11 +329,10 @@ if __name__ == '__main__':
                         default='gim_dkm')
     parser.add_argument('--stop_after_db', action='store_true')
     parser.add_argument('--mask_dir', type=str, default=None,
-                        help='Directory containing binary masks (PNG/NPY) to filter dynamic keypoints. '
-                             'White (255) regions will be removed. If not set, defaults to inputs/<scene>/masks '
-                             'if it exists.')
+                        help='Directory containing binary masks (PNG/NPY). '
+                             'White (255) regions will be painted white in memory during feature extraction. '
+                             'If not set, defaults to inputs/<scene>/masks if it exists.')
 
     args = parser.parse_args()
 
     main(args.scene_name, args.version, stop_after_db=args.stop_after_db, mask_dir=args.mask_dir)
-    main(args.scene_name, args.version, stop_after_db=args.stop_after_db)
