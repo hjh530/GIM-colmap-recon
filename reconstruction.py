@@ -8,6 +8,7 @@ from tqdm import tqdm
 from os.path import join
 from pathlib import Path
 from argparse import ArgumentParser
+from PIL import Image
 
 # HLOC imports
 from hloc import extract_features, match_features, match_dense, reconstruction
@@ -24,247 +25,350 @@ from networks.mit_semseg.models import ModelBuilder, SegmentationModule
 # 辅助函数
 # =========================================================
 
-def extract_image_number(name):
-    """从文件名中提取数字（假设文件名如 '0.jpg', '123.png'）"""
-    match = re.search(r'(\d+)', name)
-    if match:
-        return int(match.group(1))
-    return -1
-
 def get_descriptors_subset(names, all_names, all_desc_tensor, name2idx):
-    """从全量描述子中提取子集"""
     indices = [name2idx[n] for n in names]
     return all_desc_tensor[indices]
 
+
 def match_groups(query_names, db_names, query_desc, db_desc, num_matched, device, thresh=None):
-    """
-    使用 NetVLAD 描述子进行相似度匹配，返回匹配对列表。
-    如果 thresh 不为 None，则只保留相似度 >= thresh 的对。
-    """
     query_desc = query_desc.to(device)
     db_desc = db_desc.to(device)
-    
-    # 计算相似度矩阵（余弦相似度，因为描述子已归一化）
+
     sim = torch.einsum("id,jd->ij", query_desc, db_desc)
+
     if query_names == db_names:
         sim.fill_diagonal_(float('-inf'))
-        
+
     k = min(num_matched, len(db_names))
     topk = torch.topk(sim, k, dim=1)
+
     scores = topk.values.cpu().numpy()
     indices = topk.indices.cpu().numpy()
-    
+
     pairs = []
     for i in range(len(query_names)):
         for j_idx in range(k):
             score = scores[i, j_idx]
             if thresh is not None and score < thresh:
                 continue
+
             db_idx = indices[i, j_idx]
             q_name = query_names[i]
             d_name = db_names[db_idx]
+
             if q_name == d_name:
                 continue
+
             pair = tuple(sorted((q_name, d_name)))
             pairs.append(pair)
-    
+
     del sim, query_desc, db_desc
     torch.cuda.empty_cache()
     return pairs
 
-def generate_sequential_pairs_with_netvlad(descriptors_path, output_path, window=20, sim_thresh=0.15):
-    """
-    使用 NetVLAD 描述子生成环形序列匹配对：每张图像与后续 window 张图像匹配（循环）。
-    
-    Args:
-        descriptors_path: NetVLAD 描述子 h5 文件路径
-        output_path: 输出匹配对文件路径
-        window: 每张图像向后匹配的数量（环形）
-        sim_thresh: 相似度阈值，低于此值丢弃
-    """
-    print(f"Generating cyclic sequential pairs (window={window}) with NetVLAD filtering (thresh={sim_thresh})...")
+
+def generate_sequential_pairs_with_netvlad(
+    descriptors_path, output_path, images_path,
+    window=20, sim_thresh=0.15
+):
+    print(f"Generating sequential pairs (folder order) with NetVLAD filtering...")
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    # 读取所有图像名称和全局描述子
+
+    # ====== 读取 descriptor ======
     all_names = list_h5_names(descriptors_path)
     name2idx = {n: i for i, n in enumerate(all_names)}
-    
+
     with h5py.File(str(descriptors_path), "r", libver="latest") as fd:
         all_desc = [fd[n]["global_descriptor"].__array__() for n in all_names]
-    
+
     all_desc_tensor = torch.from_numpy(np.stack(all_desc, 0)).float()
-    
-    # 按数字顺序排序
-    sorted_names = sorted(all_names, key=lambda x: extract_image_number(x))
+
+    # ====== 使用文件夹默认顺序（不排序） ======
+    image_list = os.listdir(images_path)
+
+    # 只保留 descriptor 中存在的
+    sorted_names = [n for n in image_list if n in all_names]
+
     N = len(sorted_names)
     final_pairs = set()
-    
-    # 环形匹配：每张图与后面 window 张图匹配（循环索引）
-    print("Step 1: Cyclic sequential matching...")
+
+    print("Step 1: Sequential matching (folder order)...")
+
     for i in range(N):
         q_name = sorted_names[i]
         q_desc = get_descriptors_subset([q_name], all_names, all_desc_tensor, name2idx)
-        
-        # 计算后续 window 张图的索引（环形）
+
         db_indices = [(i + offset) % N for offset in range(1, window + 1)]
         db_names = [sorted_names[idx] for idx in db_indices]
         db_desc = get_descriptors_subset(db_names, all_names, all_desc_tensor, name2idx)
-        
-        # 相似度匹配并过滤
-        pairs = match_groups([q_name], db_names, q_desc, db_desc, 
-                             num_matched=len(db_names), device=device, thresh=sim_thresh)
+
+        pairs = match_groups(
+            [q_name], db_names,
+            q_desc, db_desc,
+            num_matched=len(db_names),
+            device=device,
+            thresh=sim_thresh
+        )
+
         final_pairs.update(pairs)
-    
-    print(f"Total unique pairs after filtering: {len(final_pairs)}")
+
+    print(f"Total unique pairs: {len(final_pairs)}")
+
     with open(output_path, "w") as f:
         f.write("\n".join(" ".join(p) for p in final_pairs))
 
+
+def filter_keypoints_by_mask(feature_path, mask_dir, images_dir):
+    """
+    根据 mask_dir 中的二值 mask 删除落在白色区域内的特征点。
+    feature_path : str, h5 特征文件路径
+    mask_dir     : str, 存放 mask 的目录
+    images_dir   : Path, 原始图像目录（用于获取图像尺寸）
+    """
+    mask_dir = Path(mask_dir)
+    if not mask_dir.exists():
+        print(f"[Filter] Mask directory {mask_dir} does not exist, skipping.")
+        return
+
+    print(f"[Filter] Filtering keypoints using masks from: {mask_dir}")
+    with h5py.File(feature_path, 'r+') as fd:
+        image_names = list(fd.keys())
+        for name in tqdm(image_names, desc="Filtering keypoints"):
+            grp = fd[name]
+            if 'keypoints' not in grp:
+                continue
+
+            kpts = grp['keypoints'][:]
+            descs = grp['descriptors'][:]
+
+            # 寻找对应的 mask 文件（支持 xxx_mask.png 或 xxx.png）
+            stem = Path(name).stem
+            mask_files = list(mask_dir.glob(f"{stem}_mask.*")) + \
+                         list(mask_dir.glob(f"{stem}.*"))
+            if not mask_files:
+                print(f"  [Warning] No mask for {name}, skipping")
+                continue
+            mask_path = mask_files[0]
+
+            # 加载并二值化 mask：>0 视为忽略
+            if mask_path.suffix == '.npy':
+                mask = np.load(mask_path)
+            else:
+                mask = np.array(Image.open(mask_path).convert('L'))
+            mask_bool = mask > 0
+
+            # 获取图像尺寸（优先 h5 属性，否则读图）
+            if 'image_size' in grp.attrs:
+                img_w, img_h = grp.attrs['image_size']
+            else:
+                img = Image.open(Path(images_dir) / name)
+                img_w, img_h = img.size
+
+            # 计算缩放比例
+            mask_h, mask_w = mask_bool.shape
+            scale_x = mask_w / img_w if img_w != mask_w else 1.0
+            scale_y = mask_h / img_h if img_h != mask_h else 1.0
+
+            # 逐点判断
+            keep = np.ones(len(kpts), dtype=bool)
+            for i, (x, y) in enumerate(kpts):
+                mx = int(round(x * scale_x))
+                my = int(round(y * scale_y))
+                if 0 <= mx < mask_w and 0 <= my < mask_h:
+                    if mask_bool[my, mx]:
+                        keep[i] = False
+
+            n_removed = (~keep).sum()
+            print(f"  {name}: removed {n_removed}/{len(kpts)} keypoints")
+
+            # 更新 h5 数据
+            del grp['keypoints'], grp['descriptors']
+            grp.create_dataset('keypoints', data=kpts[keep])
+            grp.create_dataset('descriptors', data=descs[keep])
+            if 'scores' in grp:
+                scores = grp['scores'][:]
+                del grp['scores']
+                grp.create_dataset('scores', data=scores[keep])
+
+    print("[Filter] Done.")
+
+
 def segmentation(images, segment_root, matcher_conf):
-    # initial device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    # initial segmentation mode
+
     net_encoder = ModelBuilder.build_encoder(
         arch='resnet50dilated',
         fc_dim=2048,
         weights='weights/encoder_epoch_20.pth')
+
     net_decoder = ModelBuilder.build_decoder(
         arch='ppm_deepsup',
         fc_dim=2048,
         num_class=150,
         weights='weights/decoder_epoch_20.pth',
         use_softmax=True)
+
     crit = torch.nn.NLLLoss(ignore_index=-1)
+
     segmentation_module = SegmentationModule(net_encoder, net_decoder, crit)
     segmentation_module = segmentation_module.to(device).eval()
-    # initial data reader
+
     dataset = ImagePairDataset(None, matcher_conf["preprocessing"], None)
-    # Segment images
-    image_list = sorted(os.listdir(images))
+
+    image_list = os.listdir(images)
+
     with torch.no_grad():
         for img in tqdm(image_list):
-            segment_path = join(segment_root, '{}.npy'.format(img[:-4]))
+            segment_path = join(segment_root, f'{img[:-4]}.npy')
             if not os.path.exists(segment_path):
                 rgb = read_image(images / img, dataset.conf.grayscale)
                 mask = segment(rgb, 1920, device, segmentation_module)
                 np.save(segment_path, mask)
-# =========================================================
-# 主流程
-# =========================================================
 
-def main(scene_name, version, stop_after_db):
-    # 路径设置
+
+def main(scene_name, version, stop_after_db, mask_dir):
     images = Path('inputs') / scene_name / 'images'
     outputs = Path('outputs') / scene_name / version
     outputs.mkdir(parents=True, exist_ok=True)
+
     os.environ['GIMRECONSTRUCTION'] = str(outputs)
-    
+
     segment_root = Path('outputs') / scene_name / 'segment'
     segment_root.mkdir(parents=True, exist_ok=True)
 
-    
     sfm_dir = outputs / 'sparse'
     database_path = sfm_dir / 'database.db'
-    image_pairs = outputs / 'pairs-sequential.txt'  # 自定义匹配对文件
-    
-    # 根据 version 选择特征提取和匹配配置
+    image_pairs = outputs / 'pairs-sequential.txt'
+
     feature_conf = matcher_conf = None
+
     if version == 'gim_dkm':
-        feature_conf = None
         matcher_conf = match_dense.confs[version]
     elif version == 'gim_lightglue':
         feature_conf = extract_features.confs['gim_superpoint']
         matcher_conf = match_features.confs[version]
-    
-    # Step 1: 提取 NetVLAD 全局描述子（用于生成匹配对）
+
+    # ===== NetVLAD =====
     netvlad_conf = extract_features.confs['netvlad']
     netvlad_out = outputs / 'global-feats-netvlad.h5'
+
     if not netvlad_out.exists():
-        print("Step 1: Extracting NetVLAD global features...")
+        print("Step 1: Extracting NetVLAD...")
         netvlad_path = extract_features.main(netvlad_conf, images, outputs)
     else:
         netvlad_path = netvlad_out
-        print(f"Using existing NetVLAD features: {netvlad_path}")
-    
-    # Step 2: 生成序列匹配对（带 NetVLAD 筛选）
+
+    # ===== 生成匹配对 =====
     if not image_pairs.exists():
-        print("Step 2: Generating sequential pairs with NetVLAD filtering...")
+        print("Step 2: Generating pairs...")
         generate_sequential_pairs_with_netvlad(
             netvlad_path,
             image_pairs,
-            window=30,           # 与后20张匹配
-            sim_thresh=0.10      # 相似度阈值，可根据实际调整
+            images,
+            window=90,
+            sim_thresh=0.20
         )
-    else:
-        print(f"Pairs file {image_pairs} already exists. Using existing pairs.")
-    
-    # Step 3: 语义分割（保留，但不影响主流程）
+
+    # ===== segmentation（原流程，可保留） =====
     segmentation(images, segment_root, matcher_conf)
-    
-    # Step 4: 特征提取与匹配
-    print(f"Step 3: Running Feature Extraction & Matching ({version})...")
+
+    # ===== 特征匹配 =====
+    print("Step 3: Feature matching...")
+
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=UserWarning)
-        
+
         if version == 'gim_dkm':
-            # Dense matching (e.g., DKM)
-            feature_path, match_path = match_dense.main(matcher_conf, image_pairs,
-                                                        images, outputs)
+            feature_path, match_path = match_dense.main(
+                matcher_conf, image_pairs, images, outputs)
+
         elif version == 'gim_lightglue':
-            # LightGlue + SuperPoint
             checkpoints_path = join('weights', 'gim_lightglue_100h.ckpt')
-            
-            # SuperPoint
+
             detector = SuperPoint({
-                'max_num_keypoints':12000,
+                'max_num_keypoints': 12000,
                 'force_num_keypoints': True,
                 'detection_threshold': 0.0,
                 'nms_radius': 3,
                 'trainable': False,
             })
+
             state_dict = torch.load(checkpoints_path, map_location='cpu')
-            if 'state_dict' in state_dict.keys():
+            if 'state_dict' in state_dict:
                 state_dict = state_dict['state_dict']
+
             for k in list(state_dict.keys()):
                 if k.startswith('model.'):
                     state_dict.pop(k)
                 if k.startswith('superpoint.'):
                     state_dict[k.replace('superpoint.', '', 1)] = state_dict.pop(k)
+
             detector.load_state_dict(state_dict)
-            
-            # LightGlue
+
             model = LightGlue({
                 'filter_threshold': 0.2,
                 'flash': False,
                 'checkpointed': True,
             })
+
             state_dict = torch.load(checkpoints_path, map_location='cpu')
-            if 'state_dict' in state_dict.keys():
+            if 'state_dict' in state_dict:
                 state_dict = state_dict['state_dict']
+
             for k in list(state_dict.keys()):
                 if k.startswith('superpoint.'):
                     state_dict.pop(k)
                 if k.startswith('model.'):
                     state_dict[k.replace('model.', '', 1)] = state_dict.pop(k)
+
             model.load_state_dict(state_dict)
-            
-            feature_path = extract_features.main(feature_conf, images, outputs,
-                                                 model=detector)
-            match_path = match_features.main(matcher_conf, image_pairs,
-                                             feature_conf['output'], outputs,
-                                             model=model)
-    
-    # Step 5: 稀疏重建
-    print("Step 4: Running Sparse Reconstruction...")
+
+            feature_path = extract_features.main(feature_conf, images, outputs, model=detector)
+            match_path = match_features.main(
+                matcher_conf, image_pairs,
+                feature_conf['output'], outputs,
+                model=model
+            )
+
+    # ===== 特征过滤（新增） =====
+    # 自动检测默认 mask_dir
+    if mask_dir is None:
+        default_mask_dir = Path('inputs') / scene_name / 'masks'
+        if default_mask_dir.exists():
+            mask_dir = str(default_mask_dir)
+
+    if mask_dir:
+        filter_keypoints_by_mask(feature_path, mask_dir, images)
+
+    # ===== 重建 =====
+    print("Step 4: Reconstruction...")
     opts = dict(camera_model='PINHOLE')
-    reconstruction.main(sfm_dir, images, image_pairs, feature_path, match_path, image_options=opts, stop_after_db=stop_after_db)
+
+    reconstruction.main(
+        sfm_dir,
+        images,
+        image_pairs,
+        feature_path,
+        match_path,
+        image_options=opts,
+        stop_after_db=stop_after_db
+    )
+
 
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--scene_name', type=str, required=True)
-    parser.add_argument('--version', type=str, choices={'gim_dkm', 'gim_lightglue'},
+    parser.add_argument('--version', type=str,
+                        choices={'gim_dkm', 'gim_lightglue'},
                         default='gim_dkm')
-    parser.add_argument('--stop_after_db', action='store_true',
-                        help='Stop after generating COLMAP database, skip reconstruction.')
+    parser.add_argument('--stop_after_db', action='store_true')
+    parser.add_argument('--mask_dir', type=str, default=None,
+                        help='Directory containing binary masks (PNG/NPY) to filter dynamic keypoints. '
+                             'White (255) regions will be removed. If not set, defaults to inputs/<scene>/masks '
+                             'if it exists.')
+
     args = parser.parse_args()
-    
+
+    main(args.scene_name, args.version, stop_after_db=args.stop_after_db, mask_dir=args.mask_dir)
     main(args.scene_name, args.version, stop_after_db=args.stop_after_db)
