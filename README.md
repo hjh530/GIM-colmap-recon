@@ -41,8 +41,14 @@ pip install -r requirements.txt
 ```bash
 sh reconstruction.sh
 ```
+This command executes the complete workflow: feature extraction, matching, and sparse reconstruction. By default, if the directory `inputs/<scene_name>/masks` exists, the pipeline will automatically load the binary masks (255 = ignored regions, 0 = background) and remove keypoints lying on dynamic objects before matching. This helps improve reconstruction robustness in scenes with moving people or objects.
 
+If you do not need mask filtering, simply ensure the masks folder does not exist, and the step will be skipped silently.
 
+To use a custom mask directory, pass the `--mask_dir` flag inside `reconstruction.sh`:
+```bash
+python reconstruction.py --scene_name ${scene_name} --version ${version} --mask_dir /path/to/masks
+```
 This script processes input images, extracts features, performs matching, and (by default) runs sparse reconstruction. Modify the script arguments as needed.
 
 #### 2. Generate database only
@@ -119,8 +125,14 @@ pip install -r requirements.txt
 ```bash
 sh reconstruction.sh
 ```
+这段命令执行完整工作流程：特征提取、匹配和稀疏重建。默认情况下，如果目录 `inputs/<scene_name>/masks` 存在，流程会自动加载二值掩码（255 = 忽略区域，0 = 背景），并在匹配前移除落在动态物体上的关键点。这有助于提高包含移动人物或物体的场景的重建鲁棒性。
 
+如果您不需要掩码过滤，只需确保 masks 文件夹不存在，该步骤将被静默跳过。
 
+要使用自定义的掩码目录，请在 `reconstruction.sh` 中传递 `--mask_dir` 标志：
+```bash
+python reconstruction.py --scene_name ${scene_name} --version ${version} --mask_dir /path/to/masks
+```
 该脚本将处理输入图像、提取特征、执行匹配，默认还会运行稀疏重建。您可以通过修改脚本参数来控制具体行为。
 
 #### 2. 仅生成数据库（跳过重建）
