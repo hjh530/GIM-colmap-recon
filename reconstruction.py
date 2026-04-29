@@ -22,16 +22,50 @@ from networks.lightglue.superpoint import SuperPoint
 from networks.lightglue.models.matchers.lightglue import LightGlue
 from networks.mit_semseg.models import ModelBuilder, SegmentationModule
 
-# =========================================================
-# 辅助函数
-# =========================================================
+
+
+def apply_masks_to_images(images, scene_name, mask_dir: Path):
+    processed_images = Path('outputs') / scene_name / 'masked_images'
+    processed_images.mkdir(parents=True, exist_ok=True)
+
+    for img_name in tqdm(os.listdir(images), desc="Applying masks"):
+        img_path = images / img_name
+        save_path = processed_images / img_name
+        img = cv2.imread(str(img_path))
+        if img is None:
+            continue
+
+        stem = Path(img_name).stem
+        # 使用传入的 mask_dir 直接查找
+        mask_file = None
+        for ext in ['.png', '.jpg', '.jpeg']:
+            p = mask_dir / f"{stem}_mask{ext}"
+            if p.exists():
+                mask_file = p
+                break
+        if mask_file is not None:
+            mask = cv2.imread(str(mask_file), cv2.IMREAD_GRAYSCALE)
+            if mask is not None:
+                if mask.shape[:2] != img.shape[:2]:
+                    mask = cv2.resize(mask, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
+                img[mask > 128] = (255, 255, 255)
+        cv2.imwrite(str(save_path), img)
+    return processed_images
+
+
+
 
 def get_descriptors_subset(names, all_names, all_desc_tensor, name2idx):
+    """从全量描述子中提取子集"""
     indices = [name2idx[n] for n in names]
     return all_desc_tensor[indices]
 
 
 def match_groups(query_names, db_names, query_desc, db_desc, num_matched, device, thresh=None):
+    """
+    使用 NetVLAD 描述子进行相似度匹配，返回匹配对列表。
+    如果 thresh 不为 None，则只保留相似度 >= thresh 的对。
+    """
     query_desc = query_desc.to(device)
     db_desc = db_desc.to(device)
 
@@ -72,11 +106,8 @@ def generate_sequential_pairs_with_netvlad(
     descriptors_path, output_path, images_path,
     window=20, sim_thresh=0.15
 ):
-    print(f"Generating sequential pairs (folder order) with NetVLAD filtering...")
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # ====== 读取 descriptor ======
     all_names = list_h5_names(descriptors_path)
     name2idx = {n: i for i, n in enumerate(all_names)}
 
@@ -85,16 +116,11 @@ def generate_sequential_pairs_with_netvlad(
 
     all_desc_tensor = torch.from_numpy(np.stack(all_desc, 0)).float()
 
-    # ====== 使用文件夹默认顺序（不排序） ======
     image_list = os.listdir(images_path)
-
-    # 只保留 descriptor 中存在的
     sorted_names = [n for n in image_list if n in all_names]
 
     N = len(sorted_names)
     final_pairs = set()
-
-    print("Step 1: Sequential matching (folder order)...")
 
     for i in range(N):
         q_name = sorted_names[i]
@@ -114,13 +140,12 @@ def generate_sequential_pairs_with_netvlad(
 
         final_pairs.update(pairs)
 
-    print(f"Total unique pairs: {len(final_pairs)}")
-
     with open(output_path, "w") as f:
         f.write("\n".join(" ".join(p) for p in final_pairs))
 
 
 def segmentation(images, segment_root, matcher_conf):
+    # initial device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     net_encoder = ModelBuilder.build_encoder(
@@ -136,12 +161,10 @@ def segmentation(images, segment_root, matcher_conf):
         use_softmax=True)
 
     crit = torch.nn.NLLLoss(ignore_index=-1)
-
     segmentation_module = SegmentationModule(net_encoder, net_decoder, crit)
     segmentation_module = segmentation_module.to(device).eval()
 
     dataset = ImagePairDataset(None, matcher_conf["preprocessing"], None)
-
     image_list = os.listdir(images)
 
     with torch.no_grad():
@@ -170,149 +193,106 @@ def main(scene_name, version, stop_after_db, mask_dir):
     feature_conf = matcher_conf = None
 
     if version == 'gim_dkm':
+        feature_conf = None
         matcher_conf = match_dense.confs[version]
     elif version == 'gim_lightglue':
         feature_conf = extract_features.confs['gim_superpoint']
         matcher_conf = match_features.confs[version]
+
+    # ===== 判断是否需要 mask =====
+    if mask_dir_path is None:
+        processed_images = images
+    else:
+        processed_images = apply_masks_to_images(images, scene_name, mask_dir_path)
+
+
 
     # ===== NetVLAD =====
     netvlad_conf = extract_features.confs['netvlad']
     netvlad_out = outputs / 'global-feats-netvlad.h5'
 
     if not netvlad_out.exists():
-        print("Step 1: Extracting NetVLAD...")
-        netvlad_path = extract_features.main(netvlad_conf, images, outputs)
+        netvlad_path = extract_features.main(netvlad_conf, processed_images, outputs)
     else:
         netvlad_path = netvlad_out
 
-    # ===== 生成匹配对 =====
+    # ===== pairs =====
     if not image_pairs.exists():
-        print("Step 2: Generating pairs...")
+        print("Step 2: Generating sequential pairs with NetVLAD filtering...")
         generate_sequential_pairs_with_netvlad(
             netvlad_path,
             image_pairs,
-            images,
-            window=90,
+            processed_images,
+            window=700,
             sim_thresh=0.20
         )
 
-    # ===== segmentation（原流程，可保留） =====
-    segmentation(images, segment_root, matcher_conf)
+    # ===== segmentation =====
+    segmentation(processed_images, segment_root, matcher_conf)
 
-    # ===== 特征匹配（动态 mask 注入） =====
-    print("Step 3: Feature matching...")
+    # ===== matching（只改 images）=====
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning)
 
-    import hloc.utils.io as hloc_io
-    original_read_image = hloc_io.read_image
+        if version == 'gim_dkm':
+            feature_path, match_path = match_dense.main(
+                matcher_conf, image_pairs, processed_images, outputs)
 
-    # 决定 mask 目录
-    mask_dir_path = None
-    if mask_dir is None:
-        default_mask_dir = Path('inputs') / scene_name / 'masks'
-        if default_mask_dir.exists():
-            mask_dir_path = default_mask_dir
-    elif Path(mask_dir).exists():
-        mask_dir_path = Path(mask_dir)
+        elif version == 'gim_lightglue':
+            # LightGlue + SuperPoint
+            checkpoints_path = join('weights', 'gim_lightglue_100h.ckpt')
 
-    # 如果存在 mask 目录，替换 read_image
-    if mask_dir_path is not None:
-        print(f"[Dynamic Mask] Applying masks from {mask_dir_path} during feature extraction")
+            detector = SuperPoint({
+                'max_num_keypoints': 12000,
+                'force_num_keypoints': False,
+                'detection_threshold': 0.0,
+                'nms_radius': 3,
+                'trainable': False,
+            })
 
-        def masked_read_image(path, grayscale=False):
-            # 读取原始图像 (numpy array)
-            img = original_read_image(path, grayscale=grayscale)
+            state_dict = torch.load(checkpoints_path, map_location='cpu')
+            if 'state_dict' in state_dict:
+                state_dict = state_dict['state_dict']
 
-            # 查找对应的 mask 文件
-            img_path = Path(path)
-            stem = img_path.stem
-            mask_files = list(mask_dir_path.glob(f"{stem}_mask.*")) + list(
-                mask_dir_path.glob(f"{stem}.*"))
-            if mask_files:
-                mask_file = mask_files[0]
-                mask = np.array(Image.open(mask_file).convert('L'))  # 0-255
+            for k in list(state_dict.keys()):
+                if k.startswith('model.'):
+                    state_dict.pop(k)
+                if k.startswith('superpoint.'):
+                    state_dict[k.replace('superpoint.', '', 1)] = state_dict.pop(k)
 
-                # 确保 mask 尺寸与图像匹配
-                if mask.shape[:2] != img.shape[:2]:
-                    mask = cv2.resize(mask, (img.shape[1], img.shape[0]),
-                                      interpolation=cv2.INTER_NEAREST)
+            detector.load_state_dict(state_dict)
 
-                # 白色区域 (>128) 视为要忽略的区域，涂白
-                white_mask = mask > 128
-                if grayscale:
-                    img[white_mask] = 255
-                else:
-                    img[white_mask] = (255, 255, 255)  # RGB 白色
-            return img
+            model = LightGlue({
+                'filter_threshold': 0.2,
+                'flash': True,
+                'checkpointed': True,
+            })
 
-        hloc_io.read_image = masked_read_image
+            state_dict = torch.load(checkpoints_path, map_location='cpu')
+            if 'state_dict' in state_dict:
+                state_dict = state_dict['state_dict']
 
-    try:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=UserWarning)
+            for k in list(state_dict.keys()):
+                if k.startswith('superpoint.'):
+                    state_dict.pop(k)
+                if k.startswith('model.'):
+                    state_dict[k.replace('model.', '', 1)] = state_dict.pop(k)
 
-            if version == 'gim_dkm':
-                feature_path, match_path = match_dense.main(
-                    matcher_conf, image_pairs, images, outputs)
+            model.load_state_dict(state_dict)
 
-            elif version == 'gim_lightglue':
-                checkpoints_path = join('weights', 'gim_lightglue_100h.ckpt')
+            feature_path = extract_features.main(feature_conf, processed_images, outputs, model=detector)
+            match_path = match_features.main(
+                matcher_conf, image_pairs,
+                feature_conf['output'], outputs,
+                model=model
+            )
 
-                detector = SuperPoint({
-                    'max_num_keypoints': 12000,
-                    'force_num_keypoints': True,
-                    'detection_threshold': 0.0,
-                    'nms_radius': 3,
-                    'trainable': False,
-                })
-
-                state_dict = torch.load(checkpoints_path, map_location='cpu')
-                if 'state_dict' in state_dict:
-                    state_dict = state_dict['state_dict']
-
-                for k in list(state_dict.keys()):
-                    if k.startswith('model.'):
-                        state_dict.pop(k)
-                    if k.startswith('superpoint.'):
-                        state_dict[k.replace('superpoint.', '', 1)] = state_dict.pop(k)
-
-                detector.load_state_dict(state_dict)
-
-                model = LightGlue({
-                    'filter_threshold': 0.2,
-                    'flash': False,
-                    'checkpointed': True,
-                })
-
-                state_dict = torch.load(checkpoints_path, map_location='cpu')
-                if 'state_dict' in state_dict:
-                    state_dict = state_dict['state_dict']
-
-                for k in list(state_dict.keys()):
-                    if k.startswith('superpoint.'):
-                        state_dict.pop(k)
-                    if k.startswith('model.'):
-                        state_dict[k.replace('model.', '', 1)] = state_dict.pop(k)
-
-                model.load_state_dict(state_dict)
-
-                feature_path = extract_features.main(feature_conf, images, outputs, model=detector)
-                match_path = match_features.main(
-                    matcher_conf, image_pairs,
-                    feature_conf['output'], outputs,
-                    model=model
-                )
-    finally:
-        # 恢复原始 read_image
-        if mask_dir_path is not None:
-            hloc_io.read_image = original_read_image
-
-    # ===== 重建 =====
-    print("Step 4: Reconstruction...")
+    # ===== reconstruction（不改结构）=====
     opts = dict(camera_model='PINHOLE')
 
     reconstruction.main(
         sfm_dir,
-        images,
+        processed_images,
         image_pairs,
         feature_path,
         match_path,
@@ -328,11 +308,9 @@ if __name__ == '__main__':
                         choices={'gim_dkm', 'gim_lightglue'},
                         default='gim_dkm')
     parser.add_argument('--stop_after_db', action='store_true')
-    parser.add_argument('--mask_dir', type=str, default=None,
-                        help='Directory containing binary masks (PNG/NPY). '
-                             'White (255) regions will be painted white in memory during feature extraction. '
-                             'If not set, defaults to inputs/<scene>/masks if it exists.')
+    parser.add_argument('--mask_dir', type=str, default=None)
 
     args = parser.parse_args()
 
-    main(args.scene_name, args.version, stop_after_db=args.stop_after_db, mask_dir=args.mask_dir)
+    main(args.scene_name, args.version, args.stop_after_db, args.mask_dir)
+
