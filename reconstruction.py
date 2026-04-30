@@ -5,6 +5,7 @@ import warnings
 import numpy as np
 import h5py
 import cv2
+import re
 from tqdm import tqdm
 from os.path import join
 from pathlib import Path
@@ -24,7 +25,9 @@ from networks.mit_semseg.models import ModelBuilder, SegmentationModule
 # =========================================================
 # 辅助函数
 # =========================================================
-
+def natural_sort_key(s):
+    return [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', s)]  
+    
 def get_descriptors_subset(names, all_names, all_desc_tensor, name2idx):
     """从全量描述子中提取子集"""
     indices = [name2idx[n] for n in names]
@@ -88,7 +91,7 @@ def generate_sequential_pairs_with_netvlad(descriptors_path, output_path, images
             rel = p.relative_to(images_dir).as_posix()
             if rel in all_names:
                 image_rels.append(rel)
-    sorted_names = list(dict.fromkeys(image_rels))  
+    sorted_names = sorted(image_rels, key=natural_sort_key)
 
     N = len(sorted_names)
     final_pairs = set()
