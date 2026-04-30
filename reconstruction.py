@@ -285,4 +285,4 @@ if __name__ == '__main__':
                              'White (255) regions will be removed. If not set, defaults to inputs/<scene>/masks '
                              'if it exists.')
     args = parser.parse_args()
-    main(args.scene_name, args.version, stop_after_db=args.stop_after_db， mask_dir=args.mask_dir)
+    main(args.scene_name, args.version, stop_after_db=args.stop_after_db, mask_dir=args.mask_dir)
