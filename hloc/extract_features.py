@@ -237,7 +237,6 @@ class ImageDataset(torch.utils.data.Dataset):
             mask_path = self.mask_dir / (Path(name).stem + '_mask.png')
             if mask_path.exists():
                 data['mask'] = read_image(mask_path, True)
-            else:
         return data
 
     def __len__(self):
