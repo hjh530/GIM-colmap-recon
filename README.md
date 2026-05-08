@@ -55,7 +55,7 @@ This script processes input images, extracts features, performs matching, and (b
 
 In `reconstruction.sh` add the `--stop_after_db` flag to stop after database creation:
 ```bash
-python reconstruction1.py --scene_name ${scene_name} --version ${version} --stop_after_db
+python reconstruction.py --scene_name ${scene_name} --version ${version} --stop_after_db
 ```
 
 
