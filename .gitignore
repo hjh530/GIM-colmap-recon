@@ -21,6 +21,9 @@ inputs/
 zeb.xlsx
 video_list.txt
 
+# Claude
+CLAUDE.md
+
 # Symbolic link
 zeb
 data
