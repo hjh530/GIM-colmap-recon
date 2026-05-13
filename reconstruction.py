@@ -184,7 +184,9 @@ def main(scene_name, version, stop_after_db, mask_dir=None,
 
     sfm_dir = outputs / 'sparse'
     database_path = sfm_dir / 'database.db'
-    image_pairs = outputs / 'pairs-sequential.txt'
+    # mast3r uses raw simple window, gim_* use NetVLAD-filtered subset
+    raw_pairs = outputs / 'pairs-raw.txt'
+    image_pairs = outputs / (f'pairs-netvlad.txt' if version != 'mast3r' else 'pairs-raw.txt')
 
     # 根据 version 选择特征提取和匹配配置
     feature_conf = matcher_conf = None
@@ -195,28 +197,33 @@ def main(scene_name, version, stop_after_db, mask_dir=None,
         feature_conf = extract_features.confs['gim_superpoint']
         matcher_conf = match_features.confs[version]
 
-    # Step 1: NetVLAD 全局描述子 → 生成匹配对（所有版本共用）
-    netvlad_conf = extract_features.confs['netvlad']
-    netvlad_out = outputs / 'global-feats-netvlad.h5'
-    if not netvlad_out.exists():
-        print("Step 1: Extracting NetVLAD global features...")
-        netvlad_path = extract_features.main(netvlad_conf, images, outputs)
-    else:
-        netvlad_path = netvlad_out
-        print(f"Using existing NetVLAD features: {netvlad_path}")
+    # Step 1: 生成简单滑动窗口 pairs（所有版本共享基准）
+    if not raw_pairs.exists():
+        print("Step 1: Generating raw sequential pairs (simple window)...")
+        image_list = sorted([
+            p.relative_to(images).as_posix()
+            for ext in ('*.jpg', '*.jpeg', '*.png', '*.JPG', '*.PNG')
+            for p in images.rglob(ext)
+        ], key=natural_sort_key)
+        N = len(image_list)
+        window = 20
+        pairs_list = []
+        for i in range(N):
+            for offset in range(1, min(window + 1, N - i)):
+                pairs_list.append((image_list[i], image_list[i + offset]))
+        with open(raw_pairs, 'w') as f:
+            f.write('\n'.join(f'{a} {b}' for a, b in pairs_list))
+        print(f"  Generated {len(pairs_list)} pairs (window={window}).")
 
-    # Step 2: 生成序列匹配对（NetVLAD 筛选，window=20）
-    if not image_pairs.exists():
-        print("Step 2: Generating sequential pairs with NetVLAD filtering...")
+    # Step 2: gim_* 版本用 NetVLAD 从 raw pairs 中筛选
+    if version != 'mast3r' and not image_pairs.exists():
+        print("Step 2: Filtering pairs with NetVLAD...")
+        netvlad_conf = extract_features.confs['netvlad']
+        netvlad_path = extract_features.main(netvlad_conf, images, outputs)
         generate_sequential_pairs_with_netvlad(
-            netvlad_path,
-            image_pairs,
-            images_dir=images,
-            window=50,
-            sim_thresh=0.20
+            netvlad_path, image_pairs, images_dir=images,
+            window=20, sim_thresh=0.20
         )
-    else:
-        print(f"Pairs file {image_pairs} already exists. Using existing pairs.")
 
     if version != 'mast3r':
         # Step 3: 语义分割（仅 gim_* 版本需要）
@@ -346,7 +353,7 @@ def main(scene_name, version, stop_after_db, mask_dir=None,
 
             # Step 3e: 几何验证
             # 更新 pairs 文件为过滤后的结果
-            filtered_pairs = outputs / 'pairs-mast3r.txt'
+            filtered_pairs = outputs / 'pairs-mast3r-filtered.txt'
             with open(filtered_pairs, 'w') as f:
                 f.write('\n'.join(f'{a} {b}' for a, b in colmap_pairs))
             estimation_and_geometric_verification(database_path, filtered_pairs)

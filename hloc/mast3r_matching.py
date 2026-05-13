@@ -167,22 +167,36 @@ def run_mast3r_matching(
 
     im_keypoints = {idx: {} for idx in range(len(all_image_names))}
 
-    # ---- Phase 1: encode all unique images (cache encoder outputs) ----
+    # ---- Phase 1: encode all unique images (batch by shape) ----
     print(f"Encoding {len(images)} images...")
     encoder_cache = {}
-    for img_dict in tqdm(images, desc="Encoder"):
-        idx = img_dict['idx']
-        img_tensor = img_dict['img'].to(device, non_blocking=True)
-        true_shape = torch.from_numpy(img_dict['true_shape']).to(device)
-        with torch.no_grad():
-            feat, pos, _ = model._encode_image(img_tensor, true_shape)
-        encoder_cache[idx] = {
-            'feat': feat,
-            'pos': pos,
-            'shape': true_shape,
-            'true_shape': img_dict['true_shape'],
-            'instance': img_dict['instance'],
-        }
+
+    # Group images by tensor shape for batched encoding
+    shape_groups = {}
+    for img_dict in images:
+        shape_key = tuple(img_dict['true_shape'][0])
+        shape_groups.setdefault(shape_key, []).append(img_dict)
+
+    with torch.no_grad():
+        for shape_key, group in tqdm(shape_groups.items(), desc="Encoder"):
+            batch_size = 16  # tune based on GPU memory
+            for start in range(0, len(group), batch_size):
+                batch = group[start:start + batch_size]
+                imgs = torch.cat([d['img'] for d in batch], dim=0).to(device, non_blocking=True)
+                shapes = torch.from_numpy(np.stack([d['true_shape'] for d in batch])).to(device)
+
+                feats, poses, _ = model._encode_image(imgs, shapes)
+
+                for i, img_dict in enumerate(batch):
+                    encoder_cache[img_dict['idx']] = {
+                        'feat': feats[i:i+1],
+                        'pos': poses[i:i+1],
+                        'shape': shapes[i],
+                        'true_shape': img_dict['true_shape'],
+                        'instance': img_dict['instance'],
+                    }
+
+    torch.cuda.empty_cache()
 
     # ---- Phase 2: decode each pair from cache ----
     im_matches = {}
