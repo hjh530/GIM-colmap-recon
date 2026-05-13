@@ -347,6 +347,11 @@ def main(scene_name, version, stop_after_db, mask_dir=None,
             if not colmap_pairs:
                 raise RuntimeError("MASt3R matching produced no valid pairs.")
 
+            # Step 3d2: 掩码过滤（如果有 mask_dir）
+            if mask_dir is not None:
+                from hloc.mast3r_matching import filter_keypoints_by_masks
+                filter_keypoints_by_masks(database_path, mask_dir, images)
+
             # Step 3e: 几何验证
             # 更新 pairs 文件为过滤后的结果
             filtered_pairs = outputs / 'pairs-mast3r.txt'

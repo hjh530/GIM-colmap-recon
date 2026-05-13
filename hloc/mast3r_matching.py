@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
@@ -180,3 +181,135 @@ def run_mast3r_matching(
 
     torch.cuda.empty_cache()
     return colmap_image_pairs
+
+
+def filter_keypoints_by_masks(database_path, mask_dir, image_dir):
+    """
+    Remove keypoints that fall on mask regions (pixel value 255) from the
+    COLMAP database.  Updates both the `keypoints` and `matches` tables so
+    that indices stay consistent.
+
+    Parameters
+    ----------
+    database_path : Path     path to the COLMAP SQLite database
+    mask_dir : Path          directory containing `{image_stem}_mask.png` files
+    image_dir : Path         root image directory, used to get image dimensions
+    """
+    import cv2
+    from hloc.utils.database import (COLMAPDatabase, blob_to_array, array_to_blob,
+                                     pair_id_to_image_ids)
+
+    db = COLMAPDatabase.connect(database_path)
+
+    # Image id → name
+    image_rows = db.execute("SELECT image_id, name FROM images").fetchall()
+    image_id_to_name = {row[0]: row[1] for row in image_rows}
+
+    # Step 1: identify images that have masks, and build old→new index maps
+    keep_masks = {}       # image_id → boolean array (N,)  True=keep
+    old_to_new = {}       # image_id → int array (N,)  old_idx → new_idx, -1 if removed
+
+    for image_id, name in image_rows:
+        stem = Path(name).stem
+        mask_path = mask_dir / f'{stem}_mask.png'
+        if not mask_path.exists():
+            continue
+
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            continue
+
+        # Read keypoints
+        row = db.execute(
+            "SELECT data FROM keypoints WHERE image_id=?", (image_id,)
+        ).fetchone()
+        if row is None:
+            continue
+        kpts = blob_to_array(row[0], np.float32, (-1, 2))
+
+        # Get image dimensions from the original image
+        img_path = image_dir / name
+        if img_path.exists():
+            H_img, W_img = cv2.imread(str(img_path)).shape[:2]
+        else:
+            H_img, W_img = mask.shape[:2]
+
+        # Scale mask to match image dimensions if needed
+        if mask.shape[0] != H_img or mask.shape[1] != W_img:
+            mask = cv2.resize(mask, (W_img, H_img), interpolation=cv2.INTER_NEAREST)
+
+        # Check each keypoint against the mask
+        keep = np.ones(len(kpts), dtype=bool)
+        for i, (x, y) in enumerate(kpts):
+            xi, yi = int(round(x)), int(round(y))
+            if 0 <= yi < H_img and 0 <= xi < W_img:
+                if mask[yi, xi] == 255:
+                    keep[i] = False
+
+        if keep.all():
+            continue  # no keypoints removed for this image
+
+        keep_masks[image_id] = keep
+        # Build mapping: old→new
+        mapping = np.full(len(kpts), -1, dtype=np.int32)
+        mapping[keep] = np.arange(keep.sum(), dtype=np.int32)
+        old_to_new[image_id] = mapping
+
+        # Write back filtered keypoints
+        filtered_kpts = kpts[keep]
+        db.execute("DELETE FROM keypoints WHERE image_id=?", (image_id,))
+        db.add_keypoints(image_id, filtered_kpts)
+        print(f"[Mask] {name}: removed {np.sum(~keep)}/{len(kpts)} keypoints")
+
+    # Step 2: update matches
+    if not old_to_new:
+        db.commit()
+        db.close()
+        return
+
+    match_rows = db.execute(
+        "SELECT pair_id, data FROM matches"
+    ).fetchall()
+
+    for pair_id, data in match_rows:
+        id1, id2 = pair_id_to_image_ids(pair_id)
+        if id1 not in old_to_new and id2 not in old_to_new:
+            continue
+        matches = blob_to_array(data, np.uint32, (-1, 2))
+        M = len(matches)
+
+        map1 = old_to_new.get(id1)
+        map2 = old_to_new.get(id2)
+
+        if map1 is not None:
+            new0 = map1[matches[:, 0].astype(int)]
+        else:
+            new0 = matches[:, 0].astype(np.int32)
+
+        if map2 is not None:
+            new1 = map2[matches[:, 1].astype(int)]
+        else:
+            new1 = matches[:, 1].astype(np.int32)
+
+        valid = (new0 >= 0) & (new1 >= 0)
+        if not valid.any():
+            # All matches removed for this pair
+            db.execute("DELETE FROM matches WHERE pair_id=?", (pair_id,))
+            db.execute("DELETE FROM two_view_geometries WHERE pair_id=?", (pair_id,))
+            continue
+
+        filtered = np.stack([new0[valid], new1[valid]], axis=-1).astype(np.uint32)
+        db.execute("DELETE FROM matches WHERE pair_id=?", (pair_id,))
+        db.add_matches(id1, id2, filtered)
+
+        # Also update two_view_geometries if present
+        geo_rows = db.execute(
+            "SELECT rows FROM two_view_geometries WHERE pair_id=?", (pair_id,)
+        ).fetchone()
+        if geo_rows is not None:
+            db.execute("DELETE FROM two_view_geometries WHERE pair_id=?", (pair_id,))
+            db.add_two_view_geometry(id1, id2, filtered)
+
+    db.commit()
+    db.close()
+    print(f"[Mask] Filtering complete.")
