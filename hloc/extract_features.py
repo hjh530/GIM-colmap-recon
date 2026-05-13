@@ -349,4 +349,3 @@ if __name__ == '__main__':
     parser.add_argument('--mask_dir', type=Path)
     args = parser.parse_args()
     main(confs[args.conf], args.image_dir, args.export_dir, args.as_half, mask_dir=args.mask_dir)
-age_dir, args.export_dir, args.as_half)

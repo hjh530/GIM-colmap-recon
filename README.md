@@ -32,6 +32,17 @@ cd GIM-colmap-recon
 pip install -r requirements.txt
 ```
 
+#### MASt3R matching (optional)
+
+For the `--version mast3r` pipeline, install additional dependencies:
+```bash
+conda create --name gim-MASt3R --clone gim
+conda activate gim-MASt3R
+pip install -r requirements-mast3r.txt
+```
+
+The MASt3R checkpoint will be downloaded automatically from HuggingFace Hub on first use, or place it manually under `weights/mast3r/`.
+
 
 ---
 
@@ -41,15 +52,31 @@ pip install -r requirements.txt
 ```bash
 sh reconstruction.sh
 ```
-This command executes the complete workflow: feature extraction, matching, and sparse reconstruction. By default, if the directory `inputs/<scene_name>/masks` exists, the pipeline will automatically load the binary masks (255 = ignored regions, 0 = background) and remove keypoints lying on dynamic objects before matching. This helps improve reconstruction robustness in scenes with moving people or objects.
+This command executes the complete workflow: feature extraction, matching, and sparse reconstruction.
 
-If you do not need mask filtering, simply ensure the masks folder does not exist, and the step will be skipped silently.
+**Available matching backends (`--version`):**
+- `gim_dkm` (default) — DKM dense matching
+- `gim_lightglue` — SuperPoint + LightGlue
+- `mast3r` — [MASt3R](https://github.com/naver/mast3r/tree/mast3r_sfm) single-pass dense matching (requires `gim-MASt3R` environment)
 
-To use a custom mask directory, pass the `--mask_dir` flag inside `reconstruction.sh`:
+Example with MASt3R:
 ```bash
-python reconstruction.py --scene_name ${scene_name} --version ${version} --mask_dir /path/to/masks
+conda activate gim-MASt3R
+python reconstruction.py --scene_name my_scene --version mast3r --stop_after_db
+python reconstruction.py --scene_name my_scene --version mast3r  # full reconstruction
 ```
-This script processes input images, extracts features, performs matching, and (by default) runs sparse reconstruction. Modify the script arguments as needed.
+
+**MASt3R options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--mast3r_maxdim` | 512 | Max image dimension for inference |
+| `--mast3r_conf_thr` | 1.001 | Descriptor confidence threshold |
+| `--mast3r_pixel_tol` | 5 | Tolerance for iterative NN refinement |
+| `--mast3r_subsample` | 8 | Grid step for sparse matching |
+| `--mast3r_min_track_len` | 3 | Minimum track length |
+
+**Mask filtering:** By default, if the directory `inputs/<scene_name>/masks` exists, the pipeline will automatically load binary masks (255 = ignored regions, 0 = background) to filter keypoints on dynamic objects. Set `--mask_dir` to use a custom path.
 
 #### 2. Generate database only
 
@@ -116,6 +143,17 @@ cd GIM-colmap-recon
 pip install -r requirements.txt
 ```
 
+#### MASt3R 匹配（可选）
+
+使用 `--version mast3r` 需要额外安装：
+```bash
+conda create --name gim-MASt3R --clone gim
+conda activate gim-MASt3R
+pip install -r requirements-mast3r.txt
+```
+
+MASt3R 模型权重默认从 HuggingFace Hub 自动下载，也可手动放置于 `weights/mast3r/` 目录。
+
 
 ---
 
@@ -125,21 +163,27 @@ pip install -r requirements.txt
 ```bash
 sh reconstruction.sh
 ```
-这段命令执行完整工作流程：特征提取、匹配和稀疏重建。默认情况下，如果目录 `inputs/<scene_name>/masks` 存在，流程会自动加载二值掩码（255 = 忽略区域，0 = 背景），并在匹配前移除落在动态物体上的关键点。这有助于提高包含移动人物或物体的场景的重建鲁棒性。
+这段命令执行完整工作流程：特征提取、匹配和稀疏重建。
 
-如果您不需要掩码过滤，只需确保 masks 文件夹不存在，该步骤将被静默跳过。
+**可用的匹配后端（`--version`）：**
+- `gim_dkm`（默认）— DKM 密集匹配
+- `gim_lightglue` — SuperPoint + LightGlue
+- `mast3r` — [MASt3R](https://github.com/naver/mast3r/tree/mast3r_sfm) 单次推理密集匹配（需要 `gim-MASt3R` 环境）
 
-要使用自定义的掩码目录，请在 `reconstruction.sh` 中传递 `--mask_dir` 标志：
+MASt3R 示例：
 ```bash
-python reconstruction.py --scene_name ${scene_name} --version ${version} --mask_dir /path/to/masks
+conda activate gim-MASt3R
+python reconstruction.py --scene_name my_scene --version mast3r --stop_after_db
+python reconstruction.py --scene_name my_scene --version mast3r  # 完整重建
 ```
-该脚本将处理输入图像、提取特征、执行匹配，默认还会运行稀疏重建。您可以通过修改脚本参数来控制具体行为。
+
+**掩码过滤：** 默认情况下，如果目录 `inputs/<scene_name>/masks` 存在，流程会自动加载二值掩码（255 = 忽略区域，0 = 背景），过滤动态物体上的关键点。使用 `--mask_dir` 可自定义路径。
 
 #### 2. 仅生成数据库（跳过重建）
 
 在 `reconstruction.sh` 中添加 `--stop_after_db` 标志即可在生成数据库后停止：
 ```bash
-python reconstruction1.py --scene_name ${scene_name} --version ${version} --stop_after_db
+python reconstruction.py --scene_name ${scene_name} --version ${version} --stop_after_db
 ```
 
 

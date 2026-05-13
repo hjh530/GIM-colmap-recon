@@ -1,0 +1,21 @@
+# Additional dependencies for MASt3R matching (--version mast3r)
+# Install into a cloned gim environment:
+#   conda create --name gim-MASt3R --clone gim
+#   conda activate gim-MASt3R
+#   pip install -r requirements-mast3r.txt
+
+torch>=2.0
+torchvision>=0.15
+kapture
+scikit-learn
+scipy
+einops
+tqdm
+opencv-python
+matplotlib
+roma
+gradio
+trimesh
+tensorboard
+pyglet<2
+huggingface-hub[torch]>=0.22

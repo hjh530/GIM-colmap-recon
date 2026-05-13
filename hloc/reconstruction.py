@@ -160,9 +160,9 @@ if __name__ == '__main__':
                             pycolmap.ImageReaderOptions().todict()))
     parser.add_argument('--mapper_options', nargs='+', default=[],
                         help='List of key=value from {}'.format(
-                            pycolmap.IncrementalMapperOptions().todict())
+                            pycolmap.IncrementalMapperOptions().todict()))
     parser.add_argument('--stop_after_db', action='store_true',
-                        help='Stop after building the database (skip reconstruction)'))
+                        help='Stop after building the database (skip reconstruction)')
     args = parser.parse_args().__dict__
 
     image_options = parse_option_args(

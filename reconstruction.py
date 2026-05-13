@@ -12,6 +12,7 @@ from pathlib import Path
 from argparse import ArgumentParser
 
 # HLOC imports
+import pycolmap
 from hloc import extract_features, match_features, match_dense, reconstruction
 from hloc.utils import segment
 from hloc.utils.io import read_image, list_h5_names
@@ -150,7 +151,9 @@ def segmentation(images, segment_root, matcher_conf):
 # 主流程
 # =========================================================
 
-def main(scene_name, version, stop_after_db, mask_dir=None):
+def main(scene_name, version, stop_after_db, mask_dir=None,
+         mast3r_maxdim=512, mast3r_conf_thr=1.001, mast3r_pixel_tol=5,
+         mast3r_subsample=8, mast3r_min_track_len=3):
     # 路径设置
     images = Path('inputs') / scene_name / 'images'
     outputs = Path('outputs') / scene_name / version
@@ -191,31 +194,32 @@ def main(scene_name, version, stop_after_db, mask_dir=None):
         feature_conf = extract_features.confs['gim_superpoint']
         matcher_conf = match_features.confs[version]
 
-    # Step 1: 提取 NetVLAD 全局描述子（用于生成匹配对）
-    netvlad_conf = extract_features.confs['netvlad']
-    netvlad_out = outputs / 'global-feats-netvlad.h5'
-    if not netvlad_out.exists():
-        print("Step 1: Extracting NetVLAD global features...")
-        netvlad_path = extract_features.main(netvlad_conf, images, outputs)
-    else:
-        netvlad_path = netvlad_out
-        print(f"Using existing NetVLAD features: {netvlad_path}")
+    if version != 'mast3r':
+        # Step 1: 提取 NetVLAD 全局描述子（用于生成匹配对）
+        netvlad_conf = extract_features.confs['netvlad']
+        netvlad_out = outputs / 'global-feats-netvlad.h5'
+        if not netvlad_out.exists():
+            print("Step 1: Extracting NetVLAD global features...")
+            netvlad_path = extract_features.main(netvlad_conf, images, outputs)
+        else:
+            netvlad_path = netvlad_out
+            print(f"Using existing NetVLAD features: {netvlad_path}")
 
-    # Step 2: 生成序列匹配对（带 NetVLAD 筛选）
-    if not image_pairs.exists():
-        print("Step 2: Generating sequential pairs with NetVLAD filtering...")
-        generate_sequential_pairs_with_netvlad(
-            netvlad_path,
-            image_pairs,
-            images_dir=images,
-            window=700,          # 可自行调整
-            sim_thresh=0.20
-        )
-    else:
-        print(f"Pairs file {image_pairs} already exists. Using existing pairs.")
+        # Step 2: 生成序列匹配对（带 NetVLAD 筛选）
+        if not image_pairs.exists():
+            print("Step 2: Generating sequential pairs with NetVLAD filtering...")
+            generate_sequential_pairs_with_netvlad(
+                netvlad_path,
+                image_pairs,
+                images_dir=images,
+                window=700,
+                sim_thresh=0.20
+            )
+        else:
+            print(f"Pairs file {image_pairs} already exists. Using existing pairs.")
 
-    # Step 3: 语义分割（保留原逻辑，与掩膜过滤相互独立）
-    segmentation(images, segment_root, matcher_conf)
+        # Step 3: 语义分割（保留原逻辑，与掩膜过滤相互独立）
+        segmentation(images, segment_root, matcher_conf)
 
     # Step 4: 特征提取与匹配
     print(f"Step 3: Running Feature Extraction & Matching ({version})...")
@@ -273,22 +277,130 @@ def main(scene_name, version, stop_after_db, mask_dir=None):
             match_path = match_dense.main(matcher_conf, image_pairs,
                                           dense_feat_conf['output'], outputs)
 
-    # Step 5: 稀疏重建
-    print("Step 4: Running Sparse Reconstruction...")
-    opts = dict(camera_model='PINHOLE')
-    reconstruction.main(sfm_dir, images, image_pairs, feature_path, match_path,
-                        image_options=opts, stop_after_db=stop_after_db)
+        elif version == 'mast3r':
+            # MASt3R: single-pass dense matching → COLMAP database
+            from hloc.mast3r_matching import load_mast3r_model, run_mast3r_matching
+            from hloc.reconstruction import (
+                create_empty_db, import_images, get_image_ids,
+                estimation_and_geometric_verification, run_reconstruction,
+            )
+
+            # Step 3a: 加载 MASt3R 模型
+            print("Loading MASt3R model...")
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            mast3r_model = load_mast3r_model(device)
+
+            # Step 3b: 初始化 COLMAP 数据库
+            database_path = sfm_dir / 'database.db'
+            database_path.parent.mkdir(parents=True, exist_ok=True)
+            create_empty_db(database_path)
+            # 使用 images/ 下所有图片
+            image_list = sorted([
+                p.relative_to(images).as_posix()
+                for ext in ('*.jpg', '*.jpeg', '*.png', '*.JPG', '*.PNG')
+                for p in images.rglob(ext)
+            ], key=natural_sort_key)
+            import_images(images, database_path, camera_mode=pycolmap.CameraMode.AUTO,
+                          image_list=image_list)
+            image_ids = get_image_ids(database_path)
+
+            # Step 3c: 生成或读取匹配对
+            if not image_pairs.exists():
+                print("Generating sequential pairs...")
+                N = len(image_list)
+                pairs = []
+                # 滑动窗口: 每张图与后续 window 张匹配
+                window = 20
+                for i in range(N):
+                    for offset in range(1, min(window + 1, N - i)):
+                        pairs.append((image_list[i], image_list[i + offset]))
+                with open(image_pairs, 'w') as f:
+                    f.write('\n'.join(f'{a} {b}' for a, b in pairs))
+            else:
+                print(f"Using existing pairs: {image_pairs}")
+
+            with open(image_pairs) as f:
+                pairs_list = [line.split() for line in f if line.strip()]
+
+            # Step 3d: MASt3R 推理 + 匹配 → 写入数据库
+            print("Running MASt3R matching...")
+            colmap_pairs = run_mast3r_matching(
+                model=mast3r_model,
+                image_dir=images,
+                image_pairs=pairs_list,
+                database_path=database_path,
+                image_ids=image_ids,
+                device=device,
+                # mast3r options
+                maxdim=mast3r_maxdim,
+                conf_thr=mast3r_conf_thr,
+                pixel_tol=mast3r_pixel_tol,
+                subsample=mast3r_subsample,
+                min_track_len=mast3r_min_track_len,
+                skip_geometric_verification=False,
+            )
+
+            # 释放模型显存
+            del mast3r_model
+            torch.cuda.empty_cache()
+
+            if not colmap_pairs:
+                raise RuntimeError("MASt3R matching produced no valid pairs.")
+
+            # Step 3e: 几何验证
+            # 更新 pairs 文件为过滤后的结果
+            filtered_pairs = outputs / 'pairs-mast3r.txt'
+            with open(filtered_pairs, 'w') as f:
+                f.write('\n'.join(f'{a} {b}' for a, b in colmap_pairs))
+            estimation_and_geometric_verification(database_path, filtered_pairs)
+
+            # Step 3f: 重建
+            if not stop_after_db:
+                print("Running sparse reconstruction...")
+                from hloc.reconstruction import unique_camera_ids
+                unique_camera_ids(database_path)
+                reconstruction_result = run_reconstruction(
+                    sfm_dir, database_path, images,
+                    verbose=False,
+                )
+                print(f"Reconstruction complete: {reconstruction_result.summary()}")
+            else:
+                print("Stopping after database generation as requested.")
+            return
+
+    if version != 'mast3r':
+        # Step 5: 稀疏重建
+        print("Step 4: Running Sparse Reconstruction...")
+        opts = dict(camera_model='PINHOLE')
+        reconstruction.main(sfm_dir, images, image_pairs, feature_path, match_path,
+                            image_options=opts, stop_after_db=stop_after_db)
 
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--scene_name', type=str, required=True)
     parser.add_argument('--version', type=str,
-                        choices={'gim_dkm', 'gim_lightglue'},
+                        choices={'gim_dkm', 'gim_lightglue', 'mast3r'},
                         default='gim_dkm')
     parser.add_argument('--stop_after_db', action='store_true',
                         help='Stop after generating COLMAP database, skip reconstruction.')
     parser.add_argument('--mask_dir', type=str, default=None,
                         help='Directory containing binary masks (PNG, e.g., image_mask.png). '
                              'If not set, defaults to inputs/<scene>/masks if it exists.')
+    # MASt3R options
+    parser.add_argument('--mast3r_maxdim', type=int, default=512,
+                        help='MASt3R: max image dimension for inference.')
+    parser.add_argument('--mast3r_conf_thr', type=float, default=1.001,
+                        help='MASt3R: descriptor confidence threshold.')
+    parser.add_argument('--mast3r_pixel_tol', type=int, default=5,
+                        help='MASt3R: tolerance for iterative NN refinement.')
+    parser.add_argument('--mast3r_subsample', type=int, default=8,
+                        help='MASt3R: grid step for sparse matching.')
+    parser.add_argument('--mast3r_min_track_len', type=int, default=3,
+                        help='MASt3R: minimum track length to keep a keypoint.')
     args = parser.parse_args()
-    main(args.scene_name, args.version, args.stop_after_db, mask_dir=args.mask_dir)
+    main(args.scene_name, args.version, args.stop_after_db, mask_dir=args.mask_dir,
+         mast3r_maxdim=args.mast3r_maxdim,
+         mast3r_conf_thr=args.mast3r_conf_thr,
+         mast3r_pixel_tol=args.mast3r_pixel_tol,
+         mast3r_subsample=args.mast3r_subsample,
+         mast3r_min_track_len=args.mast3r_min_track_len)
