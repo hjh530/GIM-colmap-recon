@@ -268,7 +268,7 @@ def export_images(db, images, image_paths, focals, ga_world_to_cam, camera_model
     return image_to_colmap, im_keypoints
 
 
-def export_matches(db, images, image_to_colmap, im_keypoints, im_matches, min_len_track, skip_geometric_verification):
+def export_matches(db, images, image_to_colmap, im_keypoints, im_matches, min_len_track, skip_geometric_verification, max_keypoints=None):
     colmap_image_pairs = []
     # 2D-2D are quite dense
     # we want to remove the very small tracks
@@ -353,6 +353,15 @@ def export_matches(db, images, image_to_colmap, im_keypoints, im_matches, min_le
             keypoints_kept.append(kp)
         if len(keypoints_kept) == 0:
             continue
+
+        # Sort by match count (confidence proxy), keep top max_keypoints
+        if max_keypoints is not None and len(keypoints_kept) > max_keypoints:
+            counts = [keypoints_imid[kp] for kp in keypoints_kept]
+            order = np.argsort(counts)[::-1][:max_keypoints]
+            keypoints_kept = [keypoints_kept[i] for i in order]
+            # Rebuild index mapping after filtering
+            keypoints_to_idx[imidx] = {kp: i for i, kp in enumerate(keypoints_kept)}
+
         keypoints_kept = np.array(keypoints_kept)
         keypoints_kept = np.unravel_index(keypoints_kept, images[imidx]['true_shape'][0])[
             0].base[:, ::-1].copy().astype(np.float32)

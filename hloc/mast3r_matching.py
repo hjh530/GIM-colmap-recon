@@ -110,6 +110,7 @@ def run_mast3r_matching(
     subsample=8,
     min_track_len=3,
     skip_geometric_verification=False,
+    max_keypoints=None,
 ):
     """
     Run MASt3R inference on image pairs and populate a COLMAP database.
@@ -255,6 +256,7 @@ def run_mast3r_matching(
     colmap_image_pairs = export_matches(
         db, images, image_to_colmap, im_keypoints, im_matches,
         min_track_len, skip_geometric_verification,
+        max_keypoints=max_keypoints,
     )
     db.commit()
     db.close()

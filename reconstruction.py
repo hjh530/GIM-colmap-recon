@@ -153,7 +153,8 @@ def segmentation(images, segment_root, matcher_conf):
 
 def main(scene_name, version, stop_after_db, mask_dir=None,
          mast3r_maxdim=512, mast3r_conf_thr=1.001, mast3r_pixel_tol=5,
-         mast3r_subsample=8, mast3r_min_track_len=3):
+         mast3r_subsample=8, mast3r_min_track_len=3,
+         mast3r_max_keypoints=8192):
     # 路径设置
     images = Path('inputs') / scene_name / 'images'
     outputs = Path('outputs') / scene_name / version
@@ -211,7 +212,7 @@ def main(scene_name, version, stop_after_db, mask_dir=None,
             netvlad_path,
             image_pairs,
             images_dir=images,
-            window=20,
+            window=50,
             sim_thresh=0.20
         )
     else:
@@ -324,6 +325,7 @@ def main(scene_name, version, stop_after_db, mask_dir=None,
                 pixel_tol=mast3r_pixel_tol,
                 subsample=mast3r_subsample,
                 min_track_len=mast3r_min_track_len,
+                max_keypoints=mast3r_max_keypoints,
                 skip_geometric_verification=False,
             )
 
@@ -389,10 +391,13 @@ if __name__ == '__main__':
                         help='MASt3R: grid step for sparse matching.')
     parser.add_argument('--mast3r_min_track_len', type=int, default=3,
                         help='MASt3R: minimum track length to keep a keypoint.')
+    parser.add_argument('--mast3r_max_keypoints', type=int, default=8192,
+                        help='MASt3R: max keypoints per image (keep top by match count).')
     args = parser.parse_args()
     main(args.scene_name, args.version, args.stop_after_db, mask_dir=args.mask_dir,
          mast3r_maxdim=args.mast3r_maxdim,
          mast3r_conf_thr=args.mast3r_conf_thr,
          mast3r_pixel_tol=args.mast3r_pixel_tol,
          mast3r_subsample=args.mast3r_subsample,
-         mast3r_min_track_len=args.mast3r_min_track_len)
+         mast3r_min_track_len=args.mast3r_min_track_len,
+         mast3r_max_keypoints=args.mast3r_max_keypoints)
