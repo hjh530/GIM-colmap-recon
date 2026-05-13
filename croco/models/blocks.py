@@ -15,7 +15,8 @@
 
 
 import torch
-import torch.nn as nn 
+import torch.nn as nn
+import torch.nn.functional as F
 
 from itertools import repeat
 import collections.abc
@@ -101,12 +102,11 @@ class Attention(nn.Module):
         if self.rope is not None:
             q = self.rope(q, xpos)
             k = self.rope(k, xpos)
-               
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
 
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = F.scaled_dot_product_attention(q, k, v, attn_mask=None,
+                                            dropout_p=self.attn_drop.p if self.training else 0.0,
+                                            is_causal=False)
+        x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -158,12 +158,11 @@ class CrossAttention(nn.Module):
         if self.rope is not None:
             q = self.rope(q, qpos)
             k = self.rope(k, kpos)
-            
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
 
-        x = (attn @ v).transpose(1, 2).reshape(B, Nq, C)
+        x = F.scaled_dot_product_attention(q, k, v, attn_mask=None,
+                                            dropout_p=self.attn_drop.p if self.training else 0.0,
+                                            is_causal=False)
+        x = x.transpose(1, 2).reshape(B, Nq, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
