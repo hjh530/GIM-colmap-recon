@@ -145,7 +145,7 @@ class ImagePairDataset(torch.utils.data.Dataset):
     }
 
     def __init__(self, image_dir, conf, pairs):
-        self.image_dir = image_dir
+        self.image_dir = Path(image_dir) if image_dir is not None else None
         self.conf = conf = SimpleNamespace(**{**self.default_conf, **conf})
         self.pairs = sorted(pairs) if pairs else pairs
         if self.conf.cache_images:

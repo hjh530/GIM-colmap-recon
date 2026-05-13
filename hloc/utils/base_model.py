@@ -40,8 +40,9 @@ def dynamic_load(root, model):
     classes = inspect.getmembers(module, inspect.isclass)
     # Filter classes defined in the module
     classes = [c for c in classes if c[1].__module__ == module_path]
-    # Filter classes inherited from BaseModel
-    classes = [c for c in classes if issubclass(c[1], BaseModel)]
+    # Filter classes that look like models (have default_conf or inherit BaseModel)
+    classes = [c for c in classes if hasattr(c[1], 'default_conf')
+               or issubclass(c[1], BaseModel)]
     assert len(classes) == 1, classes
     return classes[0][1]
     # return getattr(module, 'Model')

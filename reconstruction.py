@@ -274,8 +274,10 @@ def main(scene_name, version, stop_after_db, mask_dir=None,
             dense_feat_conf = extract_features.confs['gim_superpoint']
             feature_path = extract_features.main(dense_feat_conf, images, outputs,
                                                  mask_dir=mask_dir)
-            match_path = match_dense.main(matcher_conf, image_pairs,
-                                          dense_feat_conf['output'], outputs)
+            feature_path, match_path = match_dense.main(
+                matcher_conf, image_pairs, images,
+                export_dir=outputs,
+                features=dense_feat_conf['output'])
 
         elif version == 'mast3r':
             # MASt3R: single-pass dense matching → COLMAP database
