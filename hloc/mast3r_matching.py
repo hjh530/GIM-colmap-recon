@@ -11,8 +11,24 @@ from mast3r.colmap.database import get_im_matches, export_matches
 
 import mast3r.utils.path_to_dust3r  # noqa: registers dust3r/croco in path (no-op when inside gim)
 from dust3r.datasets.utils.transforms import ImgNorm
-from dust3r.inference import inference
 import torchvision.transforms.functional as tvf
+
+
+def _collate_preds(pred_list):
+    """Merge a list of per-pair MASt3R predictions into a single batched dict."""
+    if not pred_list:
+        return {}
+    keys = pred_list[0].keys()
+    out = {}
+    for k in keys:
+        vals = [p[k] for p in pred_list]
+        if isinstance(vals[0], torch.Tensor):
+            out[k] = torch.cat(vals, dim=0)
+        elif isinstance(vals[0], list):
+            out[k] = sum(vals, [])
+        else:
+            out[k] = vals
+    return out
 
 
 def load_mast3r_model(device='cuda', checkpoint=None):
@@ -150,12 +166,73 @@ def run_mast3r_matching(
 
     im_keypoints = {idx: {} for idx in range(len(all_image_names))}
 
-    # Run MASt3R inference in chunks of 4 pairs
+    # ---- Phase 1: encode all unique images (cache encoder outputs) ----
+    print(f"Encoding {len(images)} images...")
+    encoder_cache = {}
+    for img_dict in tqdm(images, desc="Encoder"):
+        idx = img_dict['idx']
+        img_tensor = img_dict['img'].to(device, non_blocking=True)
+        true_shape = torch.from_numpy(img_dict['true_shape']).to(device)
+        with torch.no_grad():
+            feat, pos, _ = model._encode_image(img_tensor, true_shape)
+        encoder_cache[idx] = {
+            'feat': feat,
+            'pos': pos,
+            'shape': true_shape,
+            'true_shape': img_dict['true_shape'],
+            'instance': img_dict['instance'],
+        }
+
+    # ---- Phase 2: decode each pair from cache ----
     im_matches = {}
-    for chunk_start in tqdm(range(0, len(matching_pairs), 4), desc="MASt3R inference"):
+    for chunk_start in tqdm(range(0, len(matching_pairs), 4), desc="MASt3R decoder"):
         chunk = matching_pairs[chunk_start:chunk_start + 4]
-        output = inference(chunk, model, device, batch_size=1, verbose=False)
-        pred1, pred2 = output['pred1'], output['pred2']
+        # Build views from cache
+        view1_list, view2_list = [], []
+        for img_a, img_b in chunk:
+            ca, cb = encoder_cache[img_a['idx']], encoder_cache[img_b['idx']]
+            view1_list.append({'img': img_a['img'], 'true_shape': ca['true_shape'],
+                               'idx': img_a['idx'], 'instance': img_a['instance']})
+            view2_list.append({'img': img_b['img'], 'true_shape': cb['true_shape'],
+                               'idx': img_b['idx'], 'instance': img_b['instance']})
+
+        # Manually run the model forward using cached encoder outputs
+        with torch.no_grad():
+            pred1_list, pred2_list = [], []
+            for i, (img_a, img_b) in enumerate(chunk):
+                ca = encoder_cache[img_a['idx']]
+                cb = encoder_cache[img_b['idx']]
+
+                f1, f2 = ca['feat'], cb['feat']
+                p1, p2 = ca['pos'], cb['pos']
+                s1, s2 = ca['shape'], cb['shape']
+
+                # _decoder
+                dec1, dec2 = model._decoder(f1, p1, f2, p2)
+
+                # _downstream_head for each side
+                with torch.cuda.amp.autocast(enabled=False):
+                    r1 = model._downstream_head(1, [tok.float() for tok in dec1], s1)
+                    r2 = model._downstream_head(2, [tok.float() for tok in dec2], s2)
+                pred1_list.append(r1)
+                pred2_list.append(r2)
+
+        # Move to CPU (get_im_matches uses numpy internally)
+        def _to_cpu(obj):
+            if isinstance(obj, torch.Tensor):
+                return obj.cpu()
+            if isinstance(obj, dict):
+                return {k: _to_cpu(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_to_cpu(v) for v in obj]
+            return obj
+
+        pred1_list = [_to_cpu(p) for p in pred1_list]
+        pred2_list = [_to_cpu(p) for p in pred2_list]
+
+        # Format predictions like the original inference output
+        pred1 = _collate_preds(pred1_list)
+        pred2 = _collate_preds(pred2_list)
 
         chunk_matches = get_im_matches(
             pred1=pred1, pred2=pred2,
@@ -169,6 +246,9 @@ def run_mast3r_matching(
             device=device,
         )
         im_matches.update(chunk_matches)
+
+    del encoder_cache
+    torch.cuda.empty_cache()
 
     # Build tracks, filter, and write to database
     db = COLMAPDatabase.connect(database_path)

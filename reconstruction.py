@@ -194,31 +194,31 @@ def main(scene_name, version, stop_after_db, mask_dir=None,
         feature_conf = extract_features.confs['gim_superpoint']
         matcher_conf = match_features.confs[version]
 
+    # Step 1: NetVLAD 全局描述子 → 生成匹配对（所有版本共用）
+    netvlad_conf = extract_features.confs['netvlad']
+    netvlad_out = outputs / 'global-feats-netvlad.h5'
+    if not netvlad_out.exists():
+        print("Step 1: Extracting NetVLAD global features...")
+        netvlad_path = extract_features.main(netvlad_conf, images, outputs)
+    else:
+        netvlad_path = netvlad_out
+        print(f"Using existing NetVLAD features: {netvlad_path}")
+
+    # Step 2: 生成序列匹配对（NetVLAD 筛选，window=20）
+    if not image_pairs.exists():
+        print("Step 2: Generating sequential pairs with NetVLAD filtering...")
+        generate_sequential_pairs_with_netvlad(
+            netvlad_path,
+            image_pairs,
+            images_dir=images,
+            window=20,
+            sim_thresh=0.20
+        )
+    else:
+        print(f"Pairs file {image_pairs} already exists. Using existing pairs.")
+
     if version != 'mast3r':
-        # Step 1: 提取 NetVLAD 全局描述子（用于生成匹配对）
-        netvlad_conf = extract_features.confs['netvlad']
-        netvlad_out = outputs / 'global-feats-netvlad.h5'
-        if not netvlad_out.exists():
-            print("Step 1: Extracting NetVLAD global features...")
-            netvlad_path = extract_features.main(netvlad_conf, images, outputs)
-        else:
-            netvlad_path = netvlad_out
-            print(f"Using existing NetVLAD features: {netvlad_path}")
-
-        # Step 2: 生成序列匹配对（带 NetVLAD 筛选）
-        if not image_pairs.exists():
-            print("Step 2: Generating sequential pairs with NetVLAD filtering...")
-            generate_sequential_pairs_with_netvlad(
-                netvlad_path,
-                image_pairs,
-                images_dir=images,
-                window=700,
-                sim_thresh=0.20
-            )
-        else:
-            print(f"Pairs file {image_pairs} already exists. Using existing pairs.")
-
-        # Step 3: 语义分割（保留原逻辑，与掩膜过滤相互独立）
+        # Step 3: 语义分割（仅 gim_* 版本需要）
         segmentation(images, segment_root, matcher_conf)
 
     # Step 4: 特征提取与匹配
@@ -305,21 +305,6 @@ def main(scene_name, version, stop_after_db, mask_dir=None,
             import_images(images, database_path, camera_mode=pycolmap.CameraMode.AUTO,
                           image_list=image_list)
             image_ids = get_image_ids(database_path)
-
-            # Step 3c: 生成或读取匹配对
-            if not image_pairs.exists():
-                print("Generating sequential pairs...")
-                N = len(image_list)
-                pairs = []
-                # 滑动窗口: 每张图与后续 window 张匹配
-                window = 20
-                for i in range(N):
-                    for offset in range(1, min(window + 1, N - i)):
-                        pairs.append((image_list[i], image_list[i + offset]))
-                with open(image_pairs, 'w') as f:
-                    f.write('\n'.join(f'{a} {b}' for a, b in pairs))
-            else:
-                print(f"Using existing pairs: {image_pairs}")
 
             with open(image_pairs) as f:
                 pairs_list = [line.split() for line in f if line.strip()]
