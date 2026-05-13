@@ -1,4 +1,4 @@
-# GIM-COLMAP-Recon
+# GIM-MASt3R: Robust SfM Matching & COLMAP Reconstruction
 
 [English](#english) | [中文](#chinese)
 
@@ -6,109 +6,132 @@
 
 <a id="english"></a>
 
-## 🇬🇧 English
+## English
 
 ### Overview
 
-This project is a modified version of [GIM](https://github.com/xuelunshen/gim), specifically tailored for generating **COLMAP-compatible feature and match databases** in challenging indoor/outdoor scenarios. It is designed to handle extreme conditions such as:
-- Large viewpoint changes
-- Low-texture or texture-less surfaces
-- Repetitive patterns
+GIM-MASt3R generates **COLMAP-compatible databases** for sparse 3D reconstruction in challenging indoor/outdoor scenarios. It integrates three state-of-the-art matching methods:
 
-By leveraging robust learned matchers like **SuperPoint + LightGlue / DKM**, the pipeline produces reliable keypoints and correspondences that significantly improve the success rate of subsequent 3D reconstruction.
+| Method | `--version` | Description |
+|--------|-------------|-------------|
+| **MASt3R** | `mast3r` | Single-pass dense descriptor matching via [MASt3R](https://github.com/naver/mast3r/tree/mast3r_sfm). Produces per-pixel 3D point maps + 24-dim dense descriptors. One forward pass per image pair, no separate feature extractor needed. Best for extreme viewpoint changes and low-texture surfaces. |
+| DKM | `gim_dkm` | Dense kernelized matching from [GIM](https://github.com/xuelunshen/gim). |
+| SuperPoint + LightGlue | `gim_lightglue` | Sparse learned keypoints + transformer matcher from [GIM](https://github.com/xuelunshen/gim). |
 
 The generated database can be directly used in:
-- COLMAP GUI or command-line interface for triangulation and bundle adjustment (BA)
+- COLMAP GUI or CLI for triangulation and bundle adjustment (BA)
 - [GLOMAP](https://github.com/colmap/glomap) for global sparse reconstruction
 
 ---
 
 ### Installation
 
-Please follow the environment setup instructions from the original [GIM repository](https://github.com/xuelunshen/gim). Ensure all dependencies (PyTorch, pycolmap, hloc, etc.) are correctly installed.
 ```bash
+# 1. Clone
 git clone --recursive https://github.com/hjh530/GIM-colmap-recon.git
 cd GIM-colmap-recon
+
+# 2. Create environment
+conda create -n gim-MASt3R python=3.9
+conda activate gim-MASt3R
+
+# 3. Install PyTorch (CUDA 11.8 for RTX 4090; adjust for your GPU)
+pip install torch>=2.0 torchvision>=0.15 --index-url https://download.pytorch.org/whl/cu118
+
+# 4. Install remaining dependencies
 pip install -r requirements.txt
 ```
 
-#### MASt3R matching (optional)
+#### MASt3R Checkpoint
 
-For the `--version mast3r` pipeline, install additional dependencies:
+The MASt3R model checkpoint (~2.3 GB) must be placed under `weights/mast3r/`:
+
 ```bash
-conda create --name gim-MASt3R --clone gim
-conda activate gim-MASt3R
-pip install -r requirements-mast3r.txt
+# Option A: Download from HuggingFace Hub
+python -c "
+from huggingface_hub import snapshot_download
+snapshot_download('naver/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric',
+                  local_dir='weights/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric')
+"
+
+# Option B: Manual download
+# Download from https://huggingface.co/naver/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric
+# Place config.json and model.safetensors in:
+#   weights/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric/
 ```
 
-The MASt3R checkpoint will be downloaded automatically from HuggingFace Hub on first use, or place it manually under `weights/mast3r/`.
-
+> `weights/` is git-ignored. The checkpoint stays local.
 
 ---
 
 ### Usage
 
 #### 1. Run full pipeline
-```bash
-sh reconstruction.sh
-```
-This command executes the complete workflow: feature extraction, matching, and sparse reconstruction.
 
-**Available matching backends (`--version`):**
-- `gim_dkm` (default) — DKM dense matching
-- `gim_lightglue` — SuperPoint + LightGlue
-- `mast3r` — [MASt3R](https://github.com/naver/mast3r/tree/mast3r_sfm) single-pass dense matching (requires `gim-MASt3R` environment)
-
-Example with MASt3R:
 ```bash
-conda activate gim-MASt3R
-python reconstruction.py --scene_name my_scene --version mast3r --stop_after_db
-python reconstruction.py --scene_name my_scene --version mast3r  # full reconstruction
+python reconstruction.py --scene_name <scene_name> --version <version>
 ```
 
-**MASt3R options:**
+Place images in `inputs/<scene_name>/images/`. Output goes to `outputs/<scene_name>/<version>/`.
+
+#### 2. Generate database only (skip reconstruction)
+
+```bash
+python reconstruction.py --scene_name <scene_name> --version mast3r --stop_after_db
+```
+
+#### 3. MASt3R options
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--mast3r_maxdim` | 512 | Max image dimension for inference |
 | `--mast3r_conf_thr` | 1.001 | Descriptor confidence threshold |
 | `--mast3r_pixel_tol` | 5 | Tolerance for iterative NN refinement |
-| `--mast3r_subsample` | 8 | Grid step for sparse matching |
-| `--mast3r_min_track_len` | 3 | Minimum track length |
+| `--mast3r_subsample` | 8 | Grid step for sparse matching (dense: set to 1) |
+| `--mast3r_min_track_len` | 3 | Minimum track length to retain a keypoint |
 
-**Mask filtering:** By default, if the directory `inputs/<scene_name>/masks` exists, the pipeline will automatically load binary masks (255 = ignored regions, 0 = background) to filter keypoints on dynamic objects. Set `--mask_dir` to use a custom path.
+#### 4. Mask filtering (gim_dkm / gim_lightglue only)
 
-#### 2. Generate database only
+If `inputs/<scene_name>/masks/` exists, binary masks (255 = ignored, 0 = background) are automatically loaded to filter keypoints on dynamic objects. Use `--mask_dir` to specify a custom path.
 
-In `reconstruction.sh` add the `--stop_after_db` flag to stop after database creation:
+#### 5. Pair selection strategies
+
+For `gim_*` modes, the pair strategy can be adjusted in `reconstruction.py`:
+- **Sequential** — ordered sequences (video frames), default
+- **Exhaustive** — small image sets
+- **NetVLAD retrieval** — large unordered collections
+
+For `mast3r` mode, sequential pairs with configurable window size are used.
+
+#### 6. External reconstruction
+
+After generating `database.db`, you can run:
+
 ```bash
-python reconstruction.py --scene_name ${scene_name} --version ${version} --stop_after_db
+# COLMAP incremental mapper
+colmap mapper --database_path database.db --image_path <images> --output_path <output>
+
+# GLOMAP global mapper
+colmap global_mapper --database_path database.db --image_path <images> --output_path <output>
 ```
 
+---
 
-This produces a `database.db` file ready for external reconstruction tools.
+### Benchmarks
 
-#### 3. Reconstruction
+Tested on RTX 4090 with PyTorch 2.5.1, CUDA 12.1:
 
+| Scene | Images | Pairs | Tracks | Database Time | DB Size |
+|-------|--------|-------|--------|---------------|---------|
+| picture | 70 | 690 | 174K | ~3 min | 38 MB |
+| JG | 550 | 8,050 | 1,524K | ~58 min | 273 MB |
 
-You can adjust the pair selection strategy in `reconstruction.py` according to your data characteristics:
-- **Exhaustive matching** – suitable for small image sets.
-- **Sequential matching** – ideal for ordered sequences (e.g., video frames).
-- **NetVLAD retrieval** – recommended for large, unordered collections.
-
-After generating the database, you have two options for sparse reconstruction:
-
-- **GLOMAP (global SfM)** – Integrated in recent COLMAP releases. It is significantly faster than incremental SfM while achieving comparable accuracy. Example command:
-```bash
-colmap global_mapper --database_path H:\JG2\database2.db --image_path H:\JG2\images --output_path H:\JG2\sparse5
-```
-- **Incremental SfM (COLMAP GUI)** – More beginner-friendly. Simply open `database.db` in the COLMAP GUI and follow the standard reconstruction steps (feature matching is already completed).
-Robust feature extraction and matching are often the key to successful reconstruction—especially when default COLMAP methods fail. Unless the input data is extremely poor, this pipeline will likely produce a usable model.
 ---
 
 ### Acknowledgements
 
-- [GIM](https://github.com/xuelunshen/gim)
+- [MASt3R](https://github.com/naver/mast3r) — Grounding Image Matching in 3D with MASt3R
+- [GIM](https://github.com/xuelunshen/gim) — Geometric Image Matching
 - [COLMAP](https://colmap.github.io/)
 - [HLOC](https://github.com/cvg/Hierarchical-Localization)
 - [GLOMAP](https://github.com/colmap/glomap)
@@ -117,99 +140,120 @@ Robust feature extraction and matching are often the key to successful reconstru
 
 <a id="chinese"></a>
 
-## 🇨🇳 中文
+## 中文
 
 ### 项目简介
 
-本项目基于 [GIM](https://github.com/xuelunshen/gim) 修改而来，专门用于生成 **COLMAP 格式的特征与匹配数据库**，以应对室内外极端场景下的三维重建挑战，包括：
-- 大视角差
-- 弱纹理或缺乏纹理区域
-- 重复纹理结构
+GIM-MASt3R 为室内外挑战性场景生成 **COLMAP 兼容的匹配数据库**，集成三种前沿匹配方法：
 
-通过集成 **SuperPoint + LightGlue / DKM** 等鲁棒性更强的特征匹配方法，本工具能够在困难条件下获得更可靠的匹配结果，从而提升后续重建的成功率。
+| 方法 | `--version` | 说明 |
+|--------|-------------|------|
+| **MASt3R** | `mast3r` | 单次推理密集描述子匹配。每像素输出 3D 点云 + 24 维密集描述子，无需单独的特征提取器。最适合大视角差和弱纹理场景。 |
+| DKM | `gim_dkm` | 密集核化匹配 |
+| SuperPoint + LightGlue | `gim_lightglue` | 稀疏学习关键点 + Transformer 匹配器 |
 
-生成的数据库可直接用于：
-- COLMAP 图形界面或命令行进行三角测量与光束法平差 (BA)
-- [GLOMAP](https://github.com/colmap/glomap) 全局式稀疏重建
+生成的数据库可直接用于 COLMAP 或 GLOMAP 进行稀疏重建。
 
 ---
 
 ### 安装步骤
 
-请参照原项目 [GIM](https://github.com/xuelunshen/gim) 的环境配置指南，确保已正确安装 PyTorch、pycolmap、hloc 等依赖。
 ```bash
+# 1. 克隆仓库
 git clone --recursive https://github.com/hjh530/GIM-colmap-recon.git
 cd GIM-colmap-recon
+
+# 2. 创建环境
+conda create -n gim-MASt3R python=3.9
+conda activate gim-MASt3R
+
+# 3. 安装 PyTorch（根据 GPU 调整 CUDA 版本）
+pip install torch>=2.0 torchvision>=0.15 --index-url https://download.pytorch.org/whl/cu118
+
+# 4. 安装其余依赖
 pip install -r requirements.txt
 ```
 
-#### MASt3R 匹配（可选）
+#### MASt3R 模型权重
 
-使用 `--version mast3r` 需要额外安装：
+MASt3R 权重（~2.3 GB）需放置于 `weights/mast3r/` 目录：
+
 ```bash
-conda create --name gim-MASt3R --clone gim
-conda activate gim-MASt3R
-pip install -r requirements-mast3r.txt
+# 方式 A：从 HuggingFace Hub 自动下载
+python -c "
+from huggingface_hub import snapshot_download
+snapshot_download('naver/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric',
+                  local_dir='weights/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric')
+"
+
+# 方式 B：手动下载
+# 从 https://huggingface.co/naver/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric 下载
+# 将 config.json 和 model.safetensors 放入：
+#   weights/mast3r/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric/
 ```
 
-MASt3R 模型权重默认从 HuggingFace Hub 自动下载，也可手动放置于 `weights/mast3r/` 目录。
-
+> `weights/` 已被 git 忽略，权重不会上传到仓库。
 
 ---
 
 ### 使用方法
 
 #### 1. 运行完整流程
-```bash
-sh reconstruction.sh
-```
-这段命令执行完整工作流程：特征提取、匹配和稀疏重建。
 
-**可用的匹配后端（`--version`）：**
-- `gim_dkm`（默认）— DKM 密集匹配
-- `gim_lightglue` — SuperPoint + LightGlue
-- `mast3r` — [MASt3R](https://github.com/naver/mast3r/tree/mast3r_sfm) 单次推理密集匹配（需要 `gim-MASt3R` 环境）
-
-MASt3R 示例：
 ```bash
-conda activate gim-MASt3R
-python reconstruction.py --scene_name my_scene --version mast3r --stop_after_db
-python reconstruction.py --scene_name my_scene --version mast3r  # 完整重建
+python reconstruction.py --scene_name <场景名> --version <方法>
 ```
 
-**掩码过滤：** 默认情况下，如果目录 `inputs/<scene_name>/masks` 存在，流程会自动加载二值掩码（255 = 忽略区域，0 = 背景），过滤动态物体上的关键点。使用 `--mask_dir` 可自定义路径。
+将图片放入 `inputs/<场景名>/images/`。结果输出到 `outputs/<场景名>/<方法>/`。
 
-#### 2. 仅生成数据库（跳过重建）
+#### 2. 仅生成数据库
 
-在 `reconstruction.sh` 中添加 `--stop_after_db` 标志即可在生成数据库后停止：
 ```bash
-python reconstruction.py --scene_name ${scene_name} --version ${version} --stop_after_db
+python reconstruction.py --scene_name <场景名> --version mast3r --stop_after_db
 ```
 
+#### 3. MASt3R 参数
 
-此时程序会在生成 `database.db` 文件后退出，方便您后续使用外部工具进行重建。
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--mast3r_maxdim` | 512 | 推理最大图像边长 |
+| `--mast3r_conf_thr` | 1.001 | 描述子置信度阈值 |
+| `--mast3r_pixel_tol` | 5 | 迭代最近邻细化容差 |
+| `--mast3r_subsample` | 8 | 稀疏匹配采样步长（密集匹配设为 1） |
+| `--mast3r_min_track_len` | 3 | 保留关键点的最小 track 长度 |
 
-#### 3. 完成重建
+#### 4. 掩码过滤（仅 gim_dkm / gim_lightglue）
 
-您可以根据数据特点在 `reconstruction.py` 中调整匹配对选择策略：
-- **穷举匹配** – 适合小规模图像集。
-- **顺序匹配** – 适合有序序列（如视频帧）。
-- **NetVLAD 检索** – 推荐用于大规模无序图像集。
+若 `inputs/<场景名>/masks/` 存在，会自动加载二值掩码（255=忽略，0=背景）过滤动态物体上的关键点。使用 `--mask_dir` 可自定义路径。
 
-生成数据库后，有两种稀疏重建方式可选：
+#### 5. 外部重建
 
-- **GLOMAP 全局式重建** – 已集成在最新版 COLMAP 中。相比增量式重建速度更快，精度相当。示例命令：
+生成 `database.db` 后：
+
 ```bash
-colmap global_mapper --database_path H:\JG2\database2.db --image_path H:\JG2\images --output_path H:\JG2\sparse5
-```
-- **增量式重建（COLMAP GUI）** – 更适合新手。在 COLMAP 图形界面中打开 `database.db`，按常规步骤操作即可（特征匹配已完成，可直接跳至三角测量）。
+# COLMAP 增量式
+colmap mapper --database_path database.db --image_path <images> --output_path <output>
 
-更稳健的特征点提取与匹配往往能生成更准确的相机位姿。当您使用 COLMAP 默认算法无法重建时，不妨尝试本工具——除非数据质量极差，否则大概率能够成功。
+# GLOMAP 全局式
+colmap global_mapper --database_path database.db --image_path <images> --output_path <output>
+```
+
+---
+
+### 测试数据
+
+RTX 4090, PyTorch 2.5.1, CUDA 12.1：
+
+| 场景 | 图片数 | 匹配对数 | Tracks | 数据库耗时 | 数据库大小 |
+|------|--------|----------|--------|------------|------------|
+| picture | 70 | 690 | 174K | ~3 分钟 | 38 MB |
+| JG | 550 | 8,050 | 1,524K | ~58 分钟 | 273 MB |
 
 ---
 
 ### 致谢
 
+- [MASt3R](https://github.com/naver/mast3r)
 - [GIM](https://github.com/xuelunshen/gim)
 - [COLMAP](https://colmap.github.io/)
 - [HLOC](https://github.com/cvg/Hierarchical-Localization)

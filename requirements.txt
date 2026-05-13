@@ -1,0 +1,39 @@
+# Core dependencies for GIM-MASt3R SfM reconstruction
+# Install:
+#   conda create -n gim-MASt3R python=3.9
+#   conda activate gim-MASt3R
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+#   pip install -r requirements.txt
+
+# COLMAP / SfM
+pycolmap>=0.6
+
+# MASt3R inference & matching
+kapture
+huggingface-hub[torch]>=0.22
+
+# Scientific
+numpy<2
+scipy
+scikit-learn
+h5py
+
+# Image processing
+opencv-python
+pillow
+matplotlib
+
+# Deep learning
+einops
+roma
+tqdm
+
+# GIM / LightGlue support (optional, for gim_* modes)
+kornia
+lightglue
+
+# dust3r extras (optional, for demos)
+gradio
+trimesh
+tensorboard
+pyglet<2
