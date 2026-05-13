@@ -154,7 +154,7 @@ def segmentation(images, segment_root, matcher_conf):
 def main(scene_name, version, stop_after_db, mask_dir=None,
          mast3r_maxdim=512, mast3r_conf_thr=1.001, mast3r_pixel_tol=5,
          mast3r_subsample=8, mast3r_min_track_len=3,
-         mast3r_max_keypoints=8192):
+         mast3r_max_keypoints=8192, dkm_max_keypoints=8192):
     # 路径设置
     images = Path('inputs') / scene_name / 'images'
     outputs = Path('outputs') / scene_name / version
@@ -272,13 +272,16 @@ def main(scene_name, version, stop_after_db, mask_dir=None,
 
         elif version == 'gim_dkm':
             # DKM dense matching: 为使用 mask，分步提取特征
-            dense_feat_conf = extract_features.confs['gim_superpoint']
+            dense_feat_conf = dict(extract_features.confs['gim_superpoint'])
+            dense_feat_conf['model'] = dict(dense_feat_conf['model'])
+            dense_feat_conf['model']['max_num_keypoints'] = dkm_max_keypoints
             feature_path = extract_features.main(dense_feat_conf, images, outputs,
                                                  mask_dir=mask_dir)
             feature_path, match_path = match_dense.main(
                 matcher_conf, image_pairs, images,
                 export_dir=outputs,
-                features=dense_feat_conf['output'])
+                features=dense_feat_conf['output'],
+                max_kps=dkm_max_keypoints)
 
         elif version == 'mast3r':
             # MASt3R: single-pass dense matching → COLMAP database
@@ -393,6 +396,8 @@ if __name__ == '__main__':
                         help='MASt3R: minimum track length to keep a keypoint.')
     parser.add_argument('--mast3r_max_keypoints', type=int, default=8192,
                         help='MASt3R: max keypoints per image (keep top by match count).')
+    parser.add_argument('--dkm_max_keypoints', type=int, default=8192,
+                        help='DKM: max keypoints per image for SuperPoint + dense aggregation.')
     args = parser.parse_args()
     main(args.scene_name, args.version, args.stop_after_db, mask_dir=args.mask_dir,
          mast3r_maxdim=args.mast3r_maxdim,
@@ -400,4 +405,5 @@ if __name__ == '__main__':
          mast3r_pixel_tol=args.mast3r_pixel_tol,
          mast3r_subsample=args.mast3r_subsample,
          mast3r_min_track_len=args.mast3r_min_track_len,
-         mast3r_max_keypoints=args.mast3r_max_keypoints)
+         mast3r_max_keypoints=args.mast3r_max_keypoints,
+         dkm_max_keypoints=args.dkm_max_keypoints)
