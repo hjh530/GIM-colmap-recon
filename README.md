@@ -110,15 +110,23 @@ colmap global_mapper --database_path database.db --image_path <images> --output_
 
 ### Benchmarks
 
-Tested on RTX 4090, PyTorch 2.5.1, CUDA 12.1, 70 images (picture scene):
+Tested on RTX 4090, PyTorch 2.5.1, CUDA 12.1.
 
-| Method | Registered | Points3D | Observations | Notes |
-|--------|-----------|----------|--------------|-------|
-| **mast3r** | **70 / 70** | 175,490 | 1,075,023 | RoPE CUDA + encoder cache |
-| gim_dkm | 54 / 70 | 40,210 | — | 8192 kp/image |
-| gim_lightglue | 52 / 70 | 27,948 | — | LightGlue matching |
+### Picture (70 images, indoor)
 
-JG scene (550 images, mast3r): 1,524,493 tracks, ~58 min, 273 MB database.
+| Method | Registered | Points3D | Time | Peak GPU |
+|--------|-----------|----------|------|----------|
+| **mast3r** | **70 / 70** | 137,128 | 13m36s | 6.9 GB |
+| gim_dkm | 52 / 70 | 49,399 | 13m12s | 14 GB |
+| gim_lightglue | 52 / 70 | 26,336 | 3m42s | 8 GB |
+
+### JG (550 images, outdoor)
+
+| Method | Registered | Points3D | Time | Peak GPU |
+|--------|-----------|----------|------|----------|
+| **mast3r** | **550 / 550** | 1,292,695 | 2h43m | 13.6 GB |
+| gim_lightglue | 550 / 550 | 529,410 | 1h22m | 9.5 GB |
+| gim_dkm | 57 / 550 | 21,171 | 2h32m | 16 GB |
 
 ---
 
@@ -236,15 +244,23 @@ colmap global_mapper --database_path database.db --image_path <images> --output_
 
 ### 测试数据
 
-RTX 4090, PyTorch 2.5.1, CUDA 12.1, picture 场景（70 张图）：
+RTX 4090, PyTorch 2.5.1, CUDA 12.1。
 
-| 方法 | 注册数 | 3D 点数 | 观测数 | 备注 |
-|------|--------|---------|--------|------|
-| **mast3r** | **70 / 70** | 175,490 | 1,075,023 | RoPE CUDA + 编码器缓存 |
-| gim_dkm | 54 / 70 | 40,210 | — | 8192 关键点/图 |
-| gim_lightglue | 52 / 70 | 27,948 | — | LightGlue 匹配 |
+### Picture（70 张，室内）
 
-JG 场景（550 张，mast3r）：152 万 tracks，约 58 分钟，数据库 273 MB。
+| 方法 | 注册数 | 3D 点数 | 耗时 | 峰值显存 |
+|------|--------|---------|------|----------|
+| **mast3r** | **70 / 70** | 137,128 | 13m36s | 6.9 GB |
+| gim_dkm | 52 / 70 | 49,399 | 13m12s | 14 GB |
+| gim_lightglue | 52 / 70 | 26,336 | 3m42s | 8 GB |
+
+### JG（550 张，室外）
+
+| 方法 | 注册数 | 3D 点数 | 耗时 | 峰值显存 |
+|------|--------|---------|------|----------|
+| **mast3r** | **550 / 550** | 1,292,695 | 2h43m | 13.6 GB |
+| gim_lightglue | 550 / 550 | 529,410 | 1h22m | 9.5 GB |
+| gim_dkm | 57 / 550 | 21,171 | 2h32m | 16 GB |
 
 ---
 
