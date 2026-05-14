@@ -110,23 +110,41 @@ colmap global_mapper --database_path database.db --image_path <images> --output_
 
 ### Benchmarks
 
-Tested on RTX 4090, PyTorch 2.5.1, CUDA 12.1.
+Tested on RTX 4090, PyTorch 2.5.1, CUDA 12.1. Pairs: mast3r uses simple sliding window (20), gim_* use NetVLAD-filtered subset. Keypoint limits: 16384 (mast3r/gim_dkm), 8192 (gim_lightglue).
 
 ### Picture (70 images, indoor)
 
-| Method | Registered | Points3D | Time | Peak GPU |
-|--------|-----------|----------|------|----------|
-| **mast3r** | **70 / 70** | 137,128 | 13m36s | 6.9 GB |
-| gim_dkm | 52 / 70 | 49,399 | 13m12s | 14 GB |
-| gim_lightglue | 52 / 70 | 26,336 | 3m42s | 8 GB |
+| Metric | gim_dkm | gim_lightglue | mast3r |
+|--------|---------|---------------|--------|
+| Registered | 52 / 70 | 52 / 70 | **70 / 70** |
+| Points3D | 49,399 | 26,336 | 137,128 |
+| Observations | 145,553 | 159,240 | 705,446 |
+| Mean track length | 2.95 | 6.05 | 5.14 |
+| Mean obs / image | 2,799 | 3,062 | 10,078 |
+| Reprojection error | 1.11 px | 1.36 px | 1.21 px |
+| Matching time | 7m54s | **1m17s** | 4m55s |
+| Reconstruction time | 5m06s | **2m17s** | 8m09s |
+| Total time | 13m00s | **3m34s** | 13m04s |
+| Peak GPU memory | 14.0 GB | 8.0 GB | 6.9 GB |
+| DB keypoints/image | 14,152 | 12,000 | 13,236 |
+| DB matches | 543 | 543 | 679 |
 
 ### JG (550 images, outdoor)
 
-| Method | Registered | Points3D | Time | Peak GPU |
-|--------|-----------|----------|------|----------|
-| **mast3r** | **550 / 550** | 1,292,695 | 2h43m | 13.6 GB |
-| gim_lightglue | 550 / 550 | 529,410 | 1h22m | 9.5 GB |
-| gim_dkm | 57 / 550 | 21,171 | 2h32m | 16 GB |
+| Metric | gim_dkm | gim_lightglue | mast3r |
+|--------|---------|---------------|--------|
+| Registered | 57 / 550 | **550 / 550** | **550 / 550** |
+| Points3D | 21,171 | 529,410 | **1,292,695** |
+| Observations | 55,408 | 2,189,192 | **4,565,451** |
+| Mean track length | 2.62 | 4.14 | 3.53 |
+| Mean obs / image | 972 | 3,980 | 8,301 |
+| Reprojection error | 1.05 px | 1.34 px | 1.46 px |
+| Matching time | 1h54m | **18m** | 36m |
+| Reconstruction time | 37m | 1h03m | **2h05m** |
+| Total time | 2h32m | **1h21m** | 2h42m |
+| Peak GPU memory | 16.0 GB | 9.5 GB | 13.6 GB |
+| DB keypoints/image | 16,384 | 12,000 | 15,740 |
+| DB matches | 6,132 | 6,132 | 8,018 |
 
 ---
 
@@ -244,23 +262,37 @@ colmap global_mapper --database_path database.db --image_path <images> --output_
 
 ### 测试数据
 
-RTX 4090, PyTorch 2.5.1, CUDA 12.1。
+RTX 4090, PyTorch 2.5.1, CUDA 12.1。配对策略：mast3r 用简单滑动窗口(20)，gim_* 用 NetVLAD 筛选。关键点上限：mast3r/gim_dkm 16384，gim_lightglue 8192。
 
 ### Picture（70 张，室内）
 
-| 方法 | 注册数 | 3D 点数 | 耗时 | 峰值显存 |
-|------|--------|---------|------|----------|
-| **mast3r** | **70 / 70** | 137,128 | 13m36s | 6.9 GB |
-| gim_dkm | 52 / 70 | 49,399 | 13m12s | 14 GB |
-| gim_lightglue | 52 / 70 | 26,336 | 3m42s | 8 GB |
+| 指标 | gim_dkm | gim_lightglue | mast3r |
+|------|---------|---------------|--------|
+| 注册数 | 52 / 70 | 52 / 70 | **70 / 70** |
+| 3D 点数 | 49,399 | 26,336 | 137,128 |
+| 观测数 | 145,553 | 159,240 | 705,446 |
+| 平均 track 长度 | 2.95 | 6.05 | 5.14 |
+| 平均观测/图 | 2,799 | 3,062 | 10,078 |
+| 重投影误差 | 1.11 px | 1.36 px | 1.21 px |
+| 匹配时间 | 7m54s | **1m17s** | 4m55s |
+| 重建时间 | 5m06s | **2m17s** | 8m09s |
+| 总耗时 | 13m00s | **3m34s** | 13m04s |
+| 峰值显存 | 14.0 GB | 8.0 GB | 6.9 GB |
 
 ### JG（550 张，室外）
 
-| 方法 | 注册数 | 3D 点数 | 耗时 | 峰值显存 |
-|------|--------|---------|------|----------|
-| **mast3r** | **550 / 550** | 1,292,695 | 2h43m | 13.6 GB |
-| gim_lightglue | 550 / 550 | 529,410 | 1h22m | 9.5 GB |
-| gim_dkm | 57 / 550 | 21,171 | 2h32m | 16 GB |
+| 指标 | gim_dkm | gim_lightglue | mast3r |
+|------|---------|---------------|--------|
+| 注册数 | 57 / 550 | **550 / 550** | **550 / 550** |
+| 3D 点数 | 21,171 | 529,410 | **1,292,695** |
+| 观测数 | 55,408 | 2,189,192 | **4,565,451** |
+| 平均 track 长度 | 2.62 | 4.14 | 3.53 |
+| 平均观测/图 | 972 | 3,980 | 8,301 |
+| 重投影误差 | 1.05 px | 1.34 px | 1.46 px |
+| 匹配时间 | 1h54m | **18m** | 36m |
+| 重建时间 | 37m | 1h03m | **2h05m** |
+| 总耗时 | 2h32m | **1h21m** | 2h42m |
+| 峰值显存 | 16.0 GB | 9.5 GB | 13.6 GB |
 
 ---
 
