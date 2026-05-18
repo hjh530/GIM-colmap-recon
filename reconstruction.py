@@ -315,7 +315,8 @@ def main(scene_name, version, stop_after_db, mask_dir=None,
                 for p in images.rglob(ext)
             ], key=natural_sort_key)
             import_images(images, database_path, camera_mode=pycolmap.CameraMode.AUTO,
-                          image_list=image_list)
+                          image_list=image_list,
+                          options={'camera_model': camera_model})
             image_ids = get_image_ids(database_path)
 
             with open(image_pairs) as f:
