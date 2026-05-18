@@ -35,7 +35,7 @@ confs = {
         },
         'preprocessing': {
             'grayscale': True,
-            'resize_max': None,
+            'resize_max': 1600,
         },
     },
     'superpoint_aachen': {

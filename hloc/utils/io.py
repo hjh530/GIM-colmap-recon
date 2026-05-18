@@ -8,6 +8,19 @@ from .parsers import names_to_pair, names_to_pair_old
 
 
 def read_image(path, grayscale=False):
+    # Use PIL to handle EXIF orientation automatically
+    from PIL import Image
+    try:
+        pil_img = Image.open(str(path))
+        if grayscale:
+            pil_img = pil_img.convert('L')
+            return np.array(pil_img)
+        else:
+            pil_img = pil_img.convert('RGB')
+            return np.array(pil_img)
+    except Exception:
+        pass
+    # Fallback to cv2 for non-standard formats
     if grayscale:
         mode = cv2.IMREAD_GRAYSCALE
     else:
