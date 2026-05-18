@@ -154,7 +154,8 @@ def segmentation(images, segment_root, matcher_conf):
 def main(scene_name, version, stop_after_db, mask_dir=None,
          mast3r_maxdim=512, mast3r_conf_thr=1.001, mast3r_pixel_tol=5,
          mast3r_subsample=8, mast3r_min_track_len=3,
-         mast3r_max_keypoints=8192, dkm_max_keypoints=8192):
+         mast3r_max_keypoints=8192, dkm_max_keypoints=8192,
+         camera_model='PINHOLE'):
     # 路径设置
     images = Path('inputs') / scene_name / 'images'
     outputs = Path('outputs') / scene_name / version
@@ -366,6 +367,7 @@ def main(scene_name, version, stop_after_db, mask_dir=None,
                 reconstruction_result = run_reconstruction(
                     sfm_dir, database_path, images,
                     verbose=False,
+                    options={'camera_model': camera_model},
                 )
                 print(f"Reconstruction complete: {reconstruction_result.summary()}")
             else:
@@ -375,7 +377,7 @@ def main(scene_name, version, stop_after_db, mask_dir=None,
     if version != 'mast3r':
         # Step 5: 稀疏重建
         print("Step 4: Running Sparse Reconstruction...")
-        opts = dict(camera_model='PINHOLE')
+        opts = dict(camera_model=camera_model)
         reconstruction.main(sfm_dir, images, image_pairs, feature_path, match_path,
                             image_options=opts, stop_after_db=stop_after_db)
 
@@ -405,6 +407,9 @@ if __name__ == '__main__':
                         help='MASt3R: max keypoints per image (keep top by match count).')
     parser.add_argument('--dkm_max_keypoints', type=int, default=8192,
                         help='DKM: max keypoints per image for SuperPoint + dense aggregation.')
+    parser.add_argument('--camera_model', type=str, default='PINHOLE',
+                        choices=['SIMPLE_PINHOLE', 'PINHOLE', 'SIMPLE_RADIAL', 'OPENCV'],
+                        help='COLMAP camera model.')
     args = parser.parse_args()
     main(args.scene_name, args.version, args.stop_after_db, mask_dir=args.mask_dir,
          mast3r_maxdim=args.mast3r_maxdim,
@@ -413,4 +418,5 @@ if __name__ == '__main__':
          mast3r_subsample=args.mast3r_subsample,
          mast3r_min_track_len=args.mast3r_min_track_len,
          mast3r_max_keypoints=args.mast3r_max_keypoints,
-         dkm_max_keypoints=args.dkm_max_keypoints)
+         dkm_max_keypoints=args.dkm_max_keypoints,
+         camera_model=args.camera_model)
