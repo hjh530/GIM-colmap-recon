@@ -207,7 +207,7 @@ def main(scene_name, version, stop_after_db, mask_dir=None,
             for p in images.rglob(ext)
         ], key=natural_sort_key)
         N = len(image_list)
-        window = 20
+        window = 40
         pairs_list = []
         for i in range(N):
             for offset in range(1, min(window + 1, N - i)):
@@ -368,7 +368,6 @@ def main(scene_name, version, stop_after_db, mask_dir=None,
                 reconstruction_result = run_reconstruction(
                     sfm_dir, database_path, images,
                     verbose=False,
-                    options={'camera_model': camera_model},
                 )
                 print(f"Reconstruction complete: {reconstruction_result.summary()}")
             else:
